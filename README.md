@@ -6,68 +6,73 @@
 
 ## 中文
 
+Paimon（取名自《原神》中的向导派蒙）是一款本地优先的桌面 AI 助手。你可以把它当作豆包 / DeepSeek / ChatGPT 等聊天应用的“可执行升级版”：不仅能聊，还能在工作区里动手做事。  
+升级点（精简版）：🧰 工具可调用（含文件增删改查、运行代码） / 🔁 ReAct 多步推理（决策→执行→观察→再决策） / 📁 会话&项目工作区（文件/文件夹贯穿任务） / 🧩 Skills 可扩展（自建/导入文件夹/GitHub 链接）。  
+适用：日常聊天；高效信息搜集与深度报告（推荐配合内置小红书浏览工具）；办公文档处理（Excel/PPT/Word；PDF 目前偏英文流程）；把你的经验沉淀为可复用的对话式工作流（Skill），处理复杂项目与长文阅读笔记。
+
 ![派蒙桌面助手主界面](./Screenshot%202026-02-19%20003425.png)
 
-### 核心功能
-- 基于 Electron + React + FastAPI 的本地桌面 AI 助手，启动桌面端时自动拉起本地后端。
-- 支持会话与项目管理：新建、切换、归档、删除、置顶、重命名。
-- 内置文件工作区管理：`input/output/temp` 的上传、浏览、下载、打包下载。
-- 统一工具系统：MCP + Skills + 内置工具（`bash/read/write/append/edit/glob/grep/fetch`）。
-- Skills 零配置加载：将技能放入 `skills/`（运行时优先 `runtime/skills/`）后即可被自动发现并接入，无需改核心代码。
-- 支持流式对话、执行中断、权限审批后恢复执行。
+### 核心功能 🧩
+- 🖥️ **桌面端 + 本地后端**：基于 Electron + React + FastAPI，启动桌面端即自动拉起本地后端服务。
+- 🧷 **会话 / 项目管理**：新建、切换、归档、删除、置顶、重命名，一套流程打通。
+- 📁 **文件工作区**：围绕 `input / output / temp`，支持上传、浏览、下载、打包下载。
+- 🧰 **统一工具入口**：MCP + Skills + 内置工具（`bash / read / write / append / edit / glob / grep / fetch`）统一编排。
+- 🧩 **Skills 零配置加载**：把技能丢进 `skills/`（运行时优先 `runtime/skills/`）-> 自动发现接入，无需改核心代码。
+- 🌊 **流式 + 可控执行**：流式对话、执行中断、权限审批后可 `resume` 继续跑。
 
-### AI能力
-- ReAct 推理-行动循环：模型先推理，再调用工具执行，再基于工具结果继续推理，直到得到最终答案。
-- 多轮工具编排：模型可在推理过程中自动调用工具并回注结果。
-- 上下文管理：支持 token 预算分配与历史压缩。
-- MCP 按需加载：核心工具常驻，可检索工具通过 BM25 + `tool_search` 动态注入。
-- Skills 动态加载：基于 `SKILL.md` 自动解析为可调用工具。
-- 持久化记忆：会话、消息、项目、设置存储于 SQLite（WAL）。
+### AI能力 🧠
+- 🔁 **ReAct 推理-行动循环**：先推理 -> 再调用工具执行 -> 观察结果 -> 继续推理，直到产出最终答案。
+- 🧰 **多轮工具编排**：工具调用与结果回注贯穿对话过程，支持复杂任务拆解。
+- 🧮 **上下文管理**：token 预算分配 + 历史压缩，兼顾长对话与可用性。
+- 🔎 **MCP 按需加载**：核心工具常驻，可检索工具通过 BM25 + `tool_search` 动态注入。
+- 🧩 **Skills 动态加载**：基于 `SKILL.md` 自动解析为可调用工具（`skill__*`）。
+- 💾 **持久化记忆**：会话 / 消息 / 项目 / 设置存储于 SQLite（WAL）。
 
-### 关键Agent技术实现
-1. ReAct 框架
-- 在 `agent/core/main.py` 中，模型输出会进入“推理 -> 工具调用 -> 工具结果回注 -> 继续推理”的循环，直到产出最终回答或到达回合上限。
-- 同时支持流式执行与中断恢复，前端可以看到中间步骤（assistant/tool）。
+### 关键Agent技术实现 🛠️
+#### 🔁 ReAct 框架
+- `agent/core/main.py`：模型输出进入“推理 -> 工具调用 -> 工具结果回注 -> 继续推理”的循环，直到产出最终回答或达到回合上限。
+- 同时支持流式执行与中断恢复，前端可查看中间步骤（assistant/tool）。
 
-2. 上下文管理
-- `agent/core/context_manager.py` 负责 token 预算控制与历史压缩。
-- 当历史接近阈值时自动压缩旧对话，保留近期关键轮次，避免上下文爆炸并保持任务连续性。
+#### 🧮 上下文管理
+- `agent/core/context_manager.py`：负责 token 预算控制与历史压缩。
+- 当历史接近阈值时自动压缩旧对话，保留近期关键轮次，避免上下文膨胀并保持任务连续性。
 
-3. Skills 和 MCP 配置
-- MCP：`agent/core/tool_loader.py` + `agent/tools/mcp_manager.py` 自动扫描 `mcp-servers/`，按 `registry.json` 区分 core/searchable，searchable 通过 BM25 + `tool_search` 按需注入。
-- Skills：自动解析 `skills/**/SKILL.md`，生成 `skill__*` 工具接口；运行时目录 `runtime/skills/` 优先于内置目录，实现零配置覆盖加载。
+#### 🧩 Skills 和 MCP 配置
+- MCP：`agent/core/tool_loader.py` + `agent/tools/mcp_manager.py` 自动扫描 `mcp-servers/`；按 `registry.json` 区分 `core/searchable`；searchable 通过 BM25 + `tool_search` 按需注入。
+- Skills：自动解析 `skills/**/SKILL.md` 生成 `skill__*` 工具接口；`runtime/skills/` 优先于内置目录，实现零配置覆盖加载。
 
-4. 内置文件操作和 Bash 执行工具
-- 内置工具包括 `read/write/append/edit/glob/grep/fetch/bash`，统一注册到工具执行器。
+#### 📁 内置文件操作和 Bash 执行工具
+- 内置工具：`read / write / append / edit / glob / grep / fetch / bash`，统一注册到工具执行器。
 - 文件类工具通过 `resolve_path_for_tool` 做沙箱校验；Bash 类工具通过权限系统判定风险并结合审批流执行。
 
-### 用户交互逻辑（含界面）
-1. 配置 API 与 Guide 指引
-- 首次进入会检测是否已配置模型（`/api/settings/status`），未配置会进入初始化配置页；聊天页内也可打开 Config 面板更新 Base URL / API Key / Model。
-- Guide 面板通过 `/api/meta/guide` 返回当前可用 MCP、Skills、工具与工作区说明，作为用户操作指引。
+### 用户交互逻辑（含界面） 🧭
+#### 1) ⚙️ 配置 API 与 Guide 指引
+- 首次进入会检测是否已配置模型（`/api/settings/status`）：未配置 -> 进入初始化配置页。
+- 聊天页内也可打开 Config 面板更新 `Base URL / API Key / Model`。
+- Guide 面板通过 `/api/meta/guide` 返回当前可用 MCP、Skills、工具与工作区说明，作为操作指引。
 
 ![配置与Guide面板](./Screenshot%202026-02-19%20004314.png)
 
-2. 新建、置顶、重命名、删除会话 + 项目共享文件空间
-- 会话支持新建/置顶/重命名/删除，后端对应 `sessions` 路由；删除支持归档删除与硬删除。
-- 项目机制下，同一项目内会话共享项目工作区（`projects/{project_id}/files/input|output|temp`），便于多会话协作同一批文件。
+#### 2) 🗂️ 会话操作 + 项目共享文件空间
+- 会话支持新建 / 置顶 / 重命名 / 删除；后端对应 `sessions` 路由；删除支持归档删除与硬删除。
+- 项目机制下，同一项目内会话共享项目工作区：`projects/{project_id}/files/input|output|temp`，便于多会话协作同一批文件。
 
 ![会话与项目管理-1](./Screenshot%202026-02-19%20004103.png)
 ![会话与项目管理-2](./Screenshot%202026-02-19%20004221.png)
 
-3. 文件空间：上传/下载文件与文件夹 + AI Temp
-- 文件面板提供 Input / Output / Temp 三个作用域。
-- 支持上传单文件与保持目录结构上传；支持单文件下载、目录 zip 下载、Output/Temp 一键打包下载。
-- Temp（可视作 AI Temp）用于模型执行时的中间产物和临时文件，便于排查与复用。
+#### 3) 📦 文件空间：上传/下载 + AI Temp
+- 文件面板提供 `Input / Output / Temp` 三个作用域。
+- 支持：单文件上传、保持目录结构上传、单文件下载、目录 zip 下载、`Output/Temp` 一键打包下载。
+- `Temp`（可视作 AI Temp）：用于模型执行的中间产物与临时文件，便于排查与复用。
 
 ![文件空间与AI Temp](./Screenshot%202026-02-19%20004358.png)
 
-### 后端前端技术
-- 后端：FastAPI、Uvicorn、OpenAI 兼容客户端、fastmcp、SQLite。
-- 前端：Electron、React、Vite、TypeScript、Zustand、Axios、Tailwind CSS。
-- 关键接口：`/api/chat`、`/api/chat/stream`、`/api/sessions`、`/api/projects`、`/api/files`、`/api/settings`、`/api/permissions`、`/api/meta`。
+### 后端前端技术 🧱
+- **后端**：FastAPI、Uvicorn、OpenAI 兼容客户端、fastmcp、SQLite。
+- **前端**：Electron、React、Vite、TypeScript、Zustand、Axios、Tailwind CSS。
+- **关键接口**：`/api/chat`、`/api/chat/stream`、`/api/sessions`、`/api/projects`、`/api/files`、`/api/settings`、`/api/permissions`、`/api/meta`。
 
-### 安全机制
+### 安全机制 🔒
 
 #### 派蒙桌面助手 - 安全机制说明
 
@@ -205,59 +210,64 @@ npm run electron:build
 
 ## English
 
+Paimon (named after the guide character in *Genshin Impact*) is a local-first desktop AI assistant. Think of it as an “executable upgrade” over typical chat apps: it can not only chat, but also do work inside a structured workspace.  
+Upgrades (short): 🧰 tool use (file CRUD + run generated code) / 🔁 ReAct multi-step loop (decide -> act -> observe -> decide) / 📁 session & project workspaces / 🧩 extensible Skills (create/import folders/configure from GitHub links).  
+Use it for: daily chat; fast research and deep reports (recommended with the built-in RedNote/Xiaohongshu browsing tool); office docs (Excel/PPT/Word; PDF workflows are currently English-leaning); and turning your routines into reusable conversation-driven workflows (Skills).
+
 ![Paimon Desktop Main UI](./Screenshot%202026-02-19%20003425.png)
 
-### Core Features
-- Local-first desktop AI assistant built with Electron + React + FastAPI.
-- Session and project lifecycle management (create/switch/pin/rename/archive/delete).
-- Scoped file workspace operations for `input/output/temp`.
-- Unified tool system: MCP + Skills + built-ins (`bash/read/write/append/edit/glob/grep/fetch`).
-- Zero-config skill loading: drop skills into `skills/` (runtime-preferred `runtime/skills/`) and they are auto-discovered without core code changes.
-- Streaming chat, interruption, and permission-confirm-then-resume workflow.
+### Core Features 🧩
+- 🖥️ **Desktop + local backend**: Electron + React + FastAPI; launching the app automatically boots a local backend service.
+- 🧷 **Sessions / projects**: create, switch, pin, rename, archive, delete.
+- 📁 **Workspace files**: scoped `input / output / temp` browsing + upload/download + zip export.
+- 🧰 **One tool surface**: MCP + Skills + built-ins (`bash / read / write / append / edit / glob / grep / fetch`).
+- 🧩 **Zero-config skills**: drop skills into `skills/` (runtime-preferred `runtime/skills/`) -> auto-discovered, no core code changes.
+- 🌊 **Streaming + control**: streaming chat, interruption, approval, then `resume`.
 
-### AI Capabilities
-- ReAct loop (reason -> act -> observe): the model reasons, invokes tools, observes results, and iterates until final output.
-- Multi-turn tool orchestration with structured tool-result injection.
-- Context budget management and history compression.
-- Dynamic MCP loading with BM25 + `tool_search`.
-- Dynamic skill loading from `SKILL.md` with automatic tool interface generation.
-- SQLite (WAL) persistence for sessions/messages/projects/settings.
+### AI Capabilities 🧠
+- 🔁 **ReAct loop**: reason -> act (tool call) -> observe -> iterate until final output.
+- 🧰 **Multi-turn tool orchestration**: structured tool-result injection across the dialogue loop.
+- 🧮 **Context management**: token budgeting + history compression.
+- 🔎 **Dynamic MCP loading**: BM25 + `tool_search` for on-demand tool injection.
+- 🧩 **Dynamic skills**: parse `SKILL.md` and expose callable `skill__*` interfaces.
+- 💾 **Persistence**: sessions/messages/projects/settings stored in SQLite (WAL).
 
-### Key Agent Technical Implementations
-1. ReAct framework
-- In `agent/core/main.py`, execution follows a loop of reason -> tool call -> tool result injection -> continue reasoning, until a final answer is produced or max turns are reached.
-- The same loop supports streaming output and interruption/resume, so users can inspect intermediate assistant/tool steps.
+### Key Agent Technical Implementations 🛠️
+#### 🔁 ReAct framework
+- `agent/core/main.py`: runs a loop of reason -> tool call -> tool result injection -> continue reasoning, until final output or max turns.
+- Supports streaming output and interruption/resume so users can inspect intermediate assistant/tool steps.
 
-2. Context management
-- `agent/core/context_manager.py` handles token budgeting and history compression.
-- When history reaches threshold, older turns are compressed while recent turns are preserved for task continuity.
+#### 🧮 Context management
+- `agent/core/context_manager.py`: token budgeting + history compression.
+- When history reaches threshold, older turns are compressed while recent turns are preserved for continuity.
 
-3. Skills and MCP configuration
+#### 🧩 Skills and MCP configuration
 - MCP: `agent/core/tool_loader.py` + `agent/tools/mcp_manager.py` scan `mcp-servers/`, classify servers via `registry.json`, and lazily inject searchable tools via BM25 + `tool_search`.
-- Skills: `skills/**/SKILL.md` manifests are parsed into `skill__*` tool interfaces; runtime directory `runtime/skills/` has higher priority for zero-config override loading.
+- Skills: parse `skills/**/SKILL.md` into callable `skill__*` tool interfaces; `runtime/skills/` has higher priority for zero-config override loading.
 
-4. Built-in file operations and Bash execution
-- Built-in tools include `read/write/append/edit/glob/grep/fetch/bash`, registered through a unified executor.
+#### 📁 Built-in file ops and Bash execution
+- Built-ins: `read / write / append / edit / glob / grep / fetch / bash`, registered through a unified executor.
 - File tools are sandbox-validated by `resolve_path_for_tool`; Bash commands are gated by permission checks + approval flow.
 
-### User Interaction Logic (with UI)
-1. API configuration and Guide panel
-- On startup, UI checks model configuration via `/api/settings/status`; if not configured, user enters first setup flow.
-- In chat, users can open Config panel to update Base URL / API Key / Model, and Guide panel (`/api/meta/guide`) to inspect available MCP/skills/tools/workspace rules.
+### User Interaction Logic (with UI) 🧭
+#### 1) ⚙️ API configuration and Guide panel
+- On startup, UI checks model configuration via `/api/settings/status`; if not configured -> first setup flow.
+- In chat: open Config panel to update `Base URL / API Key / Model`.
+- Guide panel (`/api/meta/guide`) lists available MCP/skills/tools/workspace rules.
 
 ![API Config and Guide](./Screenshot%202026-02-19%20004314.png)
 
-2. Session operations + project-shared workspace
-- Sessions support create/pin/rename/delete (including archive vs hard delete via backend session routes).
-- Under project mode, sessions share the same project workspace (`projects/{project_id}/files/input|output|temp`) for cross-session collaboration.
+#### 2) 🗂️ Session operations + project-shared workspace
+- Sessions support create/pin/rename/delete (archive vs hard delete via backend session routes).
+- Under project mode, sessions share the same project workspace: `projects/{project_id}/files/input|output|temp`.
 
 ![Session and Project Management - 1](./Screenshot%202026-02-19%20004103.png)
 ![Session and Project Management - 2](./Screenshot%202026-02-19%20004221.png)
 
-3. File workspace: upload/download files and folders + AI Temp
-- File panel provides three scopes: Input / Output / Temp.
-- Supports single-file upload, folder-structure-preserving upload, single-file download, directory zip download, and quick output/temp zip export.
-- Temp (AI Temp) is used for intermediate artifacts generated during agent execution.
+#### 3) 📦 File workspace: upload/download + AI Temp
+- File panel provides `Input / Output / Temp`.
+- Supports: single-file upload, folder-structure-preserving upload, single-file download, directory zip download, quick output/temp zip export.
+- Temp (AI Temp) is for intermediate artifacts generated during agent execution.
 
 ![File Workspace and AI Temp](./Screenshot%202026-02-19%20004358.png)
 

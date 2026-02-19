@@ -89,3 +89,5 @@ data/*.db-wal
 # Local temp scripts/files
 .tmp_*
 *.tmp
+
+.github/workflows/

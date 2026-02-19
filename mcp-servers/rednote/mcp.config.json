@@ -1,0 +1,14 @@
+{
+    "enabled":  true,
+    "type":  "stdio",
+    "command":  "node",
+    "args":  [
+                 "dist/index.js",
+                 "--stdio"
+             ],
+    "description":  "RedNote (Xiaohongshu) content browser - search notes, get note content, get comments",
+    "env":  {
+                "REDNOTE_LOGIN_TIMEOUT_SECONDS":  "180",
+                "REDNOTE_FORCE_INTERACTIVE_LOGIN_ON_FIRST_USE":  "1"
+            }
+}

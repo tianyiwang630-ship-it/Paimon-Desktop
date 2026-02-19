@@ -1,0 +1,91 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
+.env.local
+
+# Logs and test artifacts
+*.log
+logs/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / frontend artifacts
+node_modules/
+**/node_modules/
+frontend/dist/
+frontend/release/
+
+# MCP scanner output
+.auto-config.json
+
+# Runtime and tool caches (large)
+runtime/tools/
+runtime/_toolcache/
+runtime/_nuget/
+runtime/_node_extract/
+runtime/*.zip
+runtime/**/*.zip
+runtime/*.exe
+runtime/python/*
+!runtime/python/.gitkeep
+runtime/node/*
+!runtime/node/.gitkeep
+runtime/playwright-browsers/*
+!runtime/playwright-browsers/.gitkeep
+
+# Workspace and runtime data
+sessions/
+temp/
+workspace_runtime_test/
+workspace/generated/*
+!workspace/generated/.gitkeep
+workspace/temp/*
+!workspace/temp/.gitkeep
+
+# Local DB and caches
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Local temp scripts/files
+.tmp_*
+*.tmp

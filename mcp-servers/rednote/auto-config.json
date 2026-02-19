@@ -1,0 +1,17 @@
+{
+  "_comment": " MCP Scanner ",
+  "name": "rednote",
+  "type": "stdio",
+  "command": "node",
+  "args": [
+    "dist/index.js",
+    "--stdio"
+  ],
+  "env": {
+    "REDNOTE_LOGIN_TIMEOUT_SECONDS": "180",
+    "REDNOTE_FORCE_INTERACTIVE_LOGIN_ON_FIRST_USE": "1"
+  },
+  "cwd": "D:\\files\\demo\\desk project-Paimon\\paimon-desk-assistant\\mcp-servers\\rednote",
+  "description": "RedNote (Xiaohongshu) content browser - search notes, get note content, get comments",
+  "source": "custom"
+}

@@ -1,0 +1,57 @@
+cd "d:\files\demo\desk project-Paimon\paimon-desk-assistant"
+
+# 确认现在这个 python 就是 ai12 里的
+python -c "import sys; print(sys.executable)"
+
+# 把当前环境的 python 明确告诉 Electron
+$env:SKILLS_MCP_PYTHON = (python -c "import sys; print(sys.executable)")
+
+# 先验证关键依赖确实都在
+python -c "import fastapi,uvicorn,openai,yaml,fastmcp,tiktoken,send2trash; print('python deps ok')"
+
+# 再启动桌面端
+cd frontend
+npm run electron:dev
+
+
+# ========================
+# Git 分支开发流程
+# ========================
+
+# 1. 从 main 切新分支开发
+cd "d:\files\demo\desk project-Paimon\paimon-desk-assistant"
+git switch main
+git pull
+git switch -c feat/your-change-name
+
+# 2. 开发完成后提交
+git add .
+git commit -m "your commit message"
+
+# 3A. 如果满意，合并到 main
+git switch main
+git merge feat/your-change-name
+
+# 3B. 如果不满意，回到 main，不合并
+git switch main
+
+# 4. 如果确定这个分支不要了，再删除
+git branch -D feat/your-change-name
+
+
+===提交远程仓库
+cd "D:\files\demo\desk project-Paimon\paimon-desk-assistant"
+
+git checkout --orphan v0304-source
+
+git rm -rf --cached .
+
+git add .
+
+git restore --staged "调试.txt"
+
+git commit -m "Initial source-only snapshot"
+
+git remote add origin https://github.com/你的用户名/你的仓库名.git
+
+git push -u origin v0304-source

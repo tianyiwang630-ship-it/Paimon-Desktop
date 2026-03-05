@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash(if not exist agenttools mkdir agenttools)",
+      "Bash(if not exist agentdiscovery mkdir agentdiscovery)",
+      "Bash(if not exist agentcore mkdir agentcore)",
+      "Bash(if not exist mcp-servers mkdir mcp-servers)",
+      "Bash(if not exist skills mkdir skills)",
+      "Bash(if not exist workspacegenerated mkdir workspacegenerated)",
+      "Bash(if not exist workspacetemp mkdir workspacetemp)",
+      "Bash(python:*)",
+      "Bash(D:/Anaconda/envs/ai12/python.exe:*)",
+      "Bash(dir:*)",
+      "Bash(PYTHONIOENCODING=utf-8 /d/Anaconda/envs/ai12/python.exe:*)",
+      "Bash(npm run build:*)",
+      "Bash(set:*)",
+      "Bash(\"D:\\\\Anaconda\\\\envs\\\\ai12\\\\python.exe\" -X utf8 -c:*)",
+      "Bash(node -e \"\nconst { chromium } = require\\(''playwright''\\);\n\\(async \\(\\) => {\n  const browser = await chromium.launch\\({ headless: true, args: [''--disable-blink-features=AutomationControlled''] }\\);\n  const page = await browser.newPage\\({\n    userAgent: ''Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/131.0.0.0 Safari/537.36'',\n  }\\);\n  await page.addInitScript\\(\\(\\) => {\n    Object.defineProperty\\(navigator, ''webdriver'', { get: \\(\\) => false }\\);\n  }\\);\n\n  await page.goto\\(''https://www.xiaohongshu.com'', { waitUntil: ''domcontentloaded'' }\\);\n  await page.waitForTimeout\\(3000\\);\n\n  // Use page.evaluate to build a rich snapshot with hrefs\n  const snapshot = await page.evaluate\\(\\(\\) => {\n    function walk\\(el, depth\\) {\n      if \\(depth > 8\\) return null;\n      const tag = el.tagName?.toLowerCase\\(\\);\n      if \\(!tag || [''script'',''style'',''noscript'',''svg'',''path'',''meta'',''link''].includes\\(tag\\)\\) return null;\n\n      const role = el.getAttribute\\(''role''\\) || '''';\n      const text = el.childNodes.length === 1 && el.childNodes[0].nodeType === 3\n        ? el.childNodes[0].textContent?.trim\\(\\) : '''';\n      const href = el.getAttribute\\(''href''\\);\n      const placeholder = el.getAttribute\\(''placeholder''\\);\n\n      let label = '''';\n      if \\(tag === ''a'' && href\\) label = ''link'';\n      else if \\(tag === ''button'' || role === ''button''\\) label = ''button'';\n      else if \\(tag === ''input'' || tag === ''textarea''\\) label = ''input'';\n      else if \\([''h1'',''h2'',''h3'',''h4''].includes\\(tag\\)\\) label = ''heading'';\n      else if \\(tag === ''img''\\) label = ''img'';\n\n      const children = [];\n      for \\(const child of el.children\\) {\n        const c = walk\\(child, depth + 1\\);\n        if \\(c\\) children.push\\(c\\);\n      }\n\n      // Skip empty containers with no text and no meaningful children\n      if \\(!label && !text && children.length === 0\\) return null;\n      // Collapse single-child containers\n      if \\(!label && !text && children.length === 1\\) return children[0];\n\n      const node = {};\n      if \\(label\\) node.type = label;\n      if \\(text && text.length < 200\\) node.text = text;\n      if \\(href && label === ''link''\\) node.href = href;\n      if \\(placeholder\\) node.placeholder = placeholder;\n      if \\(children.length > 0\\) node.children = children;\n      return node;\n    }\n    return walk\\(document.body, 0\\);\n  }\\);\n\n  console.log\\(JSON.stringify\\(snapshot, null, 2\\).substring\\(0, 4000\\)\\);\n  await browser.close\\(\\);\n}\\)\\(\\);\n\")",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}

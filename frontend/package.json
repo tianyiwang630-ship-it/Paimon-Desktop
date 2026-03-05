@@ -1,0 +1,115 @@
+{
+  "name": "skills-mcp-desktop",
+  "version": "1.0.0",
+  "description": "Super Personal Assistant desktop app",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "vite",
+    "build:main": "tsc -p tsconfig.electron.json",
+    "build:renderer": "vite build",
+    "build": "npm run build:main && npm run build:renderer",
+    "prepare:runtimes": "powershell -ExecutionPolicy Bypass -File scripts/prepare-bundled-runtimes.ps1",
+    "verify:runtimes": "node scripts/verify-bundled-runtimes.mjs",
+    "electron:dev": "concurrently \"npm run dev\" \"npm run build:main -- --watch\" \"wait-on http://localhost:5173 dist/main/index.js && electron .\"",
+    "electron:build": "npm run verify:runtimes && npm run build && electron-builder",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.2",
+    "axios": "^1.7.9",
+    "react-router-dom": "^6.28.0",
+    "react-markdown": "^9.0.1",
+    "lucide-react": "^0.460.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^2.6.0",
+    "class-variance-authority": "^0.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "concurrently": "^9.1.2",
+    "wait-on": "^8.0.1",
+    "tailwindcss": "^3.4.17",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49"
+  },
+  "build": {
+    "appId": "com.skills-mcp.desktop",
+    "productName": "Paimon",
+    "files": [
+      "dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../agent",
+        "to": "agent"
+      },
+      {
+        "from": "../skills",
+        "to": "skills"
+      },
+      {
+        "from": "../mcp-servers",
+        "to": "mcp-servers",
+        "filter": [
+          "**/*",
+          "!open-websearch/node_modules/npx",
+          "!open-websearch/node_modules/npx/**"
+        ]
+      },
+      {
+        "from": "../runtime/python",
+        "to": "python"
+      },
+      {
+        "from": "../runtime/node",
+        "to": "node"
+      },
+      {"from": "../runtime/playwright-browsers", "to": "playwright-browsers"},
+      {"from": "../runtime/tools", "to": "tools"},
+      {
+        "from": "../requirements.txt",
+        "to": "requirements.txt"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "mac": {
+      "target": ["dmg", "pkg"],
+      "icon": "build/icon.icns"
+    },
+    "pkg": {
+      "allowAnywhere": true,
+      "allowCurrentUserHome": true,
+      "allowRootDirectory": true,
+      "installLocation": "/Applications"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "icon": "build/icon.png"
+    }
+  }
+}

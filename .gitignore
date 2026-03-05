@@ -1,0 +1,102 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# MCP scanner generated files
+.auto-config.json
+
+# Workspace generated/runtime data
+workspace/generated/*
+workspace/temp/*
+!workspace/generated/.gitkeep
+!workspace/temp/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / build artifacts
+node_modules/
+**/node_modules/
+frontend/dist/
+frontend/release/
+frontend/release-x64/
+frontend/release-arm64/
+
+
+# build outputs
+frontend/release/
+frontend/dist/
+frontend/node_modules/
+
+# mcp deps
+mcp-servers/**/node_modules/
+
+# Packaged installers / copied package outputs
+windows/
+
+# bundled runtimes (large)
+runtime/python/
+runtime/node/
+runtime/playwright-browsers/
+runtime/tools/
+runtime/_nuget/
+runtime/_toolcache/
+runtime/_node_extract/
+runtime/*.zip
+runtime/*.exe
+
+# app data
+sessions/
+temp/
+workspace/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# misc
+*.log

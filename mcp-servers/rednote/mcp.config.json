@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "type": "stdio",
+  "command": "node",
+  "args": ["dist/index.js", "--stdio"],
+  "env": {
+    "REDNOTE_FORCE_INTERACTIVE_LOGIN_ON_FIRST_USE": "1",
+    "REDNOTE_LOGIN_TIMEOUT_SECONDS": "180"
+  },
+  "description": "RedNote/Xiaohongshu content browser for searching notes, reading note content, and getting comments / 小红书内容浏览工具，可用于搜索笔记、获取笔记内容和评论"
+}

@@ -1,7 +1,7 @@
 ﻿import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from 'electron'
 import path from 'path'
 import { shell } from 'electron'
-import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync } from 'fs'
+import { accessSync, appendFileSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'fs'
 import { createServer } from 'net'
 import { spawn, spawnSync, ChildProcess } from 'child_process'
 import {
@@ -304,6 +304,13 @@ interface PythonLaunchState {
   closeSignal: NodeJS.Signals | null
 }
 
+interface ExecutablePathDiagnostic {
+  ok: boolean
+  code: string | null
+  message: string
+  realPath: string | null
+}
+
 function getBackendScriptPath(): string {
   if (!app.isPackaged) {
     return path.join(__dirname, '../../../agent/server/app.py')
@@ -330,6 +337,81 @@ function getBundledPythonPath(): string {
     }
   }
   return candidates[0]
+}
+
+function diagnoseExecutablePath(
+  executablePath: string,
+  label: string,
+  allowedRoot?: string,
+): ExecutablePathDiagnostic {
+  let stats
+  try {
+    stats = lstatSync(executablePath)
+  } catch (error) {
+    const nodeErr = error as NodeJS.ErrnoException
+    if (nodeErr.code === 'ENOENT') {
+      return {
+        ok: false,
+        code: 'ENOENT',
+        message: `${label} not found: ${executablePath}`,
+        realPath: null,
+      }
+    }
+    return {
+      ok: false,
+      code: nodeErr.code || 'UNKNOWN',
+      message: `${label} cannot be inspected: ${executablePath} (${nodeErr.message || String(error)})`,
+      realPath: null,
+    }
+  }
+
+  let realPath: string | null = path.resolve(executablePath)
+  if (stats.isSymbolicLink()) {
+    try {
+      realPath = realpathSync(executablePath)
+    } catch (error) {
+      const nodeErr = error as NodeJS.ErrnoException
+      return {
+        ok: false,
+        code: 'ENOENT',
+        message: `${label} is a broken symlink: ${executablePath} (${nodeErr.message || String(error)})`,
+        realPath: null,
+      }
+    }
+  }
+
+  if (allowedRoot && realPath && !isPathWithinRoot(realPath, path.resolve(allowedRoot))) {
+    return {
+      ok: false,
+      code: 'EINVAL',
+      message: `${label} resolves outside bundled runtime root: ${executablePath} -> ${realPath}`,
+      realPath,
+    }
+  }
+
+  try {
+    accessSync(executablePath, fsConstants.X_OK)
+  } catch (error) {
+    const nodeErr = error as NodeJS.ErrnoException
+    return {
+      ok: false,
+      code: nodeErr.code || 'EACCES',
+      message: `${label} is not executable: ${executablePath} (${nodeErr.message || String(error)})`,
+      realPath,
+    }
+  }
+
+  return {
+    ok: true,
+    code: null,
+    message: `${label} ready: ${executablePath}${realPath && realPath !== executablePath ? ` -> ${realPath}` : ''}`,
+    realPath,
+  }
+}
+
+function diagnoseBundledPythonPath(executablePath: string): ExecutablePathDiagnostic {
+  const allowedRoot = app.isPackaged ? path.join(process.resourcesPath, 'python') : undefined
+  return diagnoseExecutablePath(executablePath, 'Bundled Python runtime', allowedRoot)
 }
 
 function getBundledNodePath(): string {
@@ -694,7 +776,11 @@ function buildPythonProbeEnv(candidate: PythonCandidate): NodeJS.ProcessEnv {
 function probePythonCandidate(candidate: PythonCandidate): PythonProbeResult {
   const startedAt = Date.now()
   if (candidate.command.includes(path.sep) || path.isAbsolute(candidate.command)) {
-    if (!existsSync(candidate.command)) {
+    const diagnostic =
+      app.isPackaged && candidate.command.startsWith(process.resourcesPath)
+        ? diagnoseBundledPythonPath(candidate.command)
+        : diagnoseExecutablePath(candidate.command, `Python candidate ${candidate.label}`)
+    if (!diagnostic.ok) {
       return {
         candidate,
         ok: false,
@@ -702,8 +788,8 @@ function probePythonCandidate(candidate: PythonCandidate): PythonProbeResult {
         status: null,
         signal: null,
         timedOut: false,
-        errorCode: 'ENOENT',
-        errorMessage: `Python candidate not found: ${candidate.command}`,
+        errorCode: diagnostic.code,
+        errorMessage: diagnostic.message,
       }
     }
   }
@@ -1070,8 +1156,24 @@ async function startPythonBackend(): Promise<{ ok: boolean; reason?: string }> {
   let bundledPlaywrightBrowsersPath: string | null = null
   let runtimePlaywrightBrowsersPath: string | null = getWindowsPlaywrightBrowsersPath()
   let bundledToolsPathEntries: string[] = []
+  let bundledPythonPath: string | null = null
 
   if (app.isPackaged) {
+    bundledPythonPath = getBundledPythonPath()
+    const pythonDiagnostic = diagnoseBundledPythonPath(bundledPythonPath)
+    if (!pythonDiagnostic.ok) {
+      const reason = `${pythonDiagnostic.message}. Package a portable runtime under resources/python before building.`
+      logBackendStartup('error', `[Bundled Python] ${reason}`)
+      setBackendStartupStatus('failed', reason)
+      return {
+        ok: false,
+        reason,
+      }
+    }
+    if (pythonDiagnostic.realPath && pythonDiagnostic.realPath !== bundledPythonPath) {
+      logBackendStartup('info', `[Bundled Python] Resolved runtime: ${bundledPythonPath} -> ${pythonDiagnostic.realPath}`)
+    }
+
     bundledNodePath = getBundledNodePath()
     if (!existsSync(bundledNodePath)) {
       const reason = `Bundled Node runtime not found: ${bundledNodePath}. Package runtime/node before building.`
@@ -1104,7 +1206,7 @@ async function startPythonBackend(): Promise<{ ok: boolean; reason?: string }> {
     runPackagedPlaywrightSelfCheck(bundledNodePath, runtimePlaywrightBrowsersPath)
   }
 
-  const candidates = getPythonCandidates()
+  const candidates = getPythonCandidates(bundledPythonPath ? [bundledPythonPath] : undefined)
   if (candidates.length === 0) {
     if (app.isPackaged) {
       const expectedPython = getBundledPythonPath()

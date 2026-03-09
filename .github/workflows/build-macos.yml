@@ -168,6 +168,26 @@ jobs:
             --${{ matrix.arch }} \
             --publish never
 
+      - name: Resolve packaged app bundle (${{ matrix.arch }})
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend/release"
+          APP_BUNDLE_PATH="$(find . -maxdepth 2 -type d -name 'Paimon.app' | head -n 1 || true)"
+          if [ -z "${APP_BUNDLE_PATH}" ]; then
+            echo "Packaged Paimon.app not found under frontend/release"
+            find . -maxdepth 2 -print
+            exit 1
+          fi
+          APP_BUNDLE_PATH="$(cd "$(dirname "${APP_BUNDLE_PATH}")" && pwd)/$(basename "${APP_BUNDLE_PATH}")"
+          echo "APP_BUNDLE_PATH=${APP_BUNDLE_PATH}" >> "$GITHUB_ENV"
+          echo "Resolved packaged app: ${APP_BUNDLE_PATH}"
+
+      - name: Verify packaged macOS app runtime (${{ matrix.arch }})
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend"
+          node scripts/verify-bundled-runtimes.mjs --app "${APP_BUNDLE_PATH}" --app-version "${APP_VERSION}"
+
       - name: Generate checksums
         shell: bash
         run: |

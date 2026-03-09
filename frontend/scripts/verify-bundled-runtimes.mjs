@@ -1,13 +1,20 @@
 import fs from 'fs'
+import http from 'http'
+import net from 'net'
+import os from 'os'
 import path from 'path'
 import process from 'process'
+import { spawn, spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
-import { spawnSync } from 'child_process'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(scriptDir, '..', '..')
 const runtimeRoot = path.join(projectRoot, 'runtime')
 const mcpRoot = path.join(projectRoot, 'mcp-servers')
+const frontendPackageJsonPath = path.join(projectRoot, 'frontend', 'package.json')
+const defaultAppVersion = fs.existsSync(frontendPackageJsonPath)
+  ? JSON.parse(fs.readFileSync(frontendPackageJsonPath, 'utf-8')).version || 'unknown'
+  : 'unknown'
 
 function exists(filePath) {
   return fs.existsSync(filePath)
@@ -16,6 +23,38 @@ function exists(filePath) {
 function fail(message) {
   console.error(`\n[verify:runtimes] ${message}`)
   process.exit(1)
+}
+
+function parseArgs(argv) {
+  const options = {
+    appPath: null,
+    appVersion: defaultAppVersion,
+  }
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const current = argv[index]
+    if (current === '--app') {
+      index += 1
+      options.appPath = argv[index] || null
+    } else if (current === '--app-version') {
+      index += 1
+      options.appVersion = argv[index] || options.appVersion
+    } else {
+      fail(`Unknown argument: ${current}`)
+    }
+  }
+
+  if (argv.includes('--app') && !options.appPath) {
+    fail('Missing value after --app')
+  }
+
+  return options
+}
+
+function isWithinRoot(candidatePath, allowedRoot) {
+  const normalizedCandidate = path.resolve(candidatePath)
+  const normalizedRoot = path.resolve(allowedRoot)
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`)
 }
 
 function walkDirectories(rootDir) {
@@ -92,6 +131,35 @@ function getBundledNodeRoot(nodePath) {
   return nodeDir
 }
 
+function getBundledRuntimeRootFromExecutable(executablePath) {
+  const executableDir = path.dirname(executablePath)
+  const dirName = path.basename(executableDir).toLowerCase()
+  if (dirName === 'bin' || dirName === 'scripts') {
+    return path.dirname(executableDir)
+  }
+  return executableDir
+}
+
+function getBundledPythonPathEntries(pythonExe) {
+  const entries = []
+  const pythonRoot = getBundledRuntimeRootFromExecutable(pythonExe)
+  const pythonDir = path.dirname(pythonExe)
+
+  entries.push(pythonDir)
+
+  if (process.platform === 'win32') {
+    entries.push(path.join(pythonRoot, 'Scripts'))
+    entries.push(path.join(pythonRoot, 'Library', 'bin'))
+    entries.push(path.join(pythonRoot, 'Library', 'usr', 'bin'))
+    entries.push(path.join(pythonRoot, 'DLLs'))
+  } else {
+    entries.push(path.join(pythonRoot, 'bin'))
+    entries.push(path.join(pythonRoot, 'lib'))
+  }
+
+  return entries
+}
+
 function getPlaywrightBrowsersRoot() {
   return path.join(runtimeRoot, 'playwright-browsers')
 }
@@ -119,14 +187,69 @@ const { chromium } = require('playwright');
 `.trim()
 }
 
-function findBundledChromiumExecutable(browsersRoot) {
-  const names =
-    process.platform === 'win32'
-      ? ['chrome.exe']
-      : process.platform === 'darwin'
-        ? ['Chromium', 'Google Chrome for Testing', 'Google Chrome']
-        : ['chrome', 'chromium', 'chromium-browser']
-  return findExecutableInTree(browsersRoot, names)
+function getPythonDependencyProbeScript() {
+  return 'import fastapi,uvicorn,openai,yaml,fastmcp,tiktoken,sse_starlette,httpx,defusedxml,lxml,pypdf,pdfplumber,reportlab,pytesseract,pdf2image,PIL,pptx,openpyxl,pandas,numpy; print("ok")'
+}
+
+function inspectPath(filePath) {
+  let stats
+  try {
+    stats = fs.lstatSync(filePath)
+  } catch (error) {
+    const nodeErr = error
+    if (nodeErr && nodeErr.code === 'ENOENT') {
+      return {
+        exists: false,
+        filePath,
+        isSymlink: false,
+        brokenSymlink: false,
+        realPath: null,
+        error: null,
+      }
+    }
+    throw error
+  }
+
+  const result = {
+    exists: true,
+    filePath,
+    isSymlink: stats.isSymbolicLink(),
+    brokenSymlink: false,
+    realPath: path.resolve(filePath),
+    error: null,
+  }
+
+  if (result.isSymlink) {
+    try {
+      result.realPath = fs.realpathSync(filePath)
+    } catch (error) {
+      const nodeErr = error
+      result.brokenSymlink = true
+      result.error = nodeErr && nodeErr.message ? nodeErr.message : String(error)
+      result.realPath = null
+    }
+  }
+
+  return result
+}
+
+function verifyExecutablePath(filePath, label, allowedRoot = null) {
+  const info = inspectPath(filePath)
+  if (!info.exists) {
+    fail(`${label} missing: ${filePath}`)
+  }
+  if (info.brokenSymlink) {
+    fail(`${label} is a broken symlink: ${filePath}. ${info.error || ''}`.trim())
+  }
+  if (allowedRoot && info.realPath && !isWithinRoot(info.realPath, allowedRoot)) {
+    fail(`${label} resolves outside allowed root.\npath: ${filePath}\nrealpath: ${info.realPath}\nallowed root: ${allowedRoot}`)
+  }
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK)
+  } catch (error) {
+    fail(`${label} is not executable: ${filePath} (${String(error)})`)
+  }
+  return info
 }
 
 function reportToolIssue(message, strictTools) {
@@ -137,45 +260,45 @@ function reportToolIssue(message, strictTools) {
 }
 
 function verifyBundledPythonLayout() {
-  if (process.platform !== 'win32') {
+  if (process.platform === 'win32') {
+    const rootPython = path.join(runtimeRoot, 'python', 'python.exe')
+    if (!exists(rootPython)) {
+      fail(`Bundled python runtime must contain python.exe at runtime/python/python.exe. Missing: ${rootPython}`)
+    }
+
+    const pyvenvCfg = path.join(runtimeRoot, 'python', 'pyvenv.cfg')
+    if (!exists(pyvenvCfg)) {
+      return
+    }
+
+    let cfgText = ''
+    try {
+      cfgText = fs.readFileSync(pyvenvCfg, 'utf-8')
+    } catch {
+      return
+    }
+
+    if (/^\s*home\s*=\s*/im.test(cfgText)) {
+      fail(
+        `runtime/python looks like a machine-bound venv (found pyvenv.cfg with home=...). Use a portable Python runtime instead of venv. File: ${pyvenvCfg}`,
+      )
+    }
     return
   }
 
-  const rootPython = path.join(runtimeRoot, 'python', 'python.exe')
-  if (!exists(rootPython)) {
-    fail(`Bundled python runtime must contain python.exe at runtime/python/python.exe. Missing: ${rootPython}`)
-  }
-
-  const pyvenvCfg = path.join(runtimeRoot, 'python', 'pyvenv.cfg')
-  if (!exists(pyvenvCfg)) {
-    return
-  }
-
-  let cfgText = ''
-  try {
-    cfgText = fs.readFileSync(pyvenvCfg, 'utf-8')
-  } catch {
-    return
-  }
-
-  if (/^\s*home\s*=\s*/im.test(cfgText)) {
-    fail(
-      `runtime/python looks like a machine-bound venv (found pyvenv.cfg with home=...). Use a portable Python runtime instead of venv. File: ${pyvenvCfg}`,
-    )
-  }
+  const pythonRoot = path.join(runtimeRoot, 'python')
+  const pythonPath = path.join(pythonRoot, 'bin', 'python3')
+  verifyExecutablePath(pythonPath, 'Bundled Python runtime', pythonRoot)
 }
 
 function verifyRuntimeFiles() {
   const expected = getExpectedRuntimePaths()
   const pythonPath = expected.pythonCandidates.find(exists)
   if (!pythonPath) {
-    fail(
-      `Missing bundled Python runtime. Checked: ${expected.pythonCandidates.join(', ')}`,
-    )
+    fail(`Missing bundled Python runtime. Checked: ${expected.pythonCandidates.join(', ')}`)
   }
-  if (!exists(expected.node)) {
-    fail(`Missing bundled Node runtime: ${expected.node}`)
-  }
+  verifyExecutablePath(pythonPath, 'Bundled Python runtime', path.join(runtimeRoot, 'python'))
+  verifyExecutablePath(expected.node, 'Bundled Node runtime', path.join(runtimeRoot, 'node'))
 
   const browsersRoot = path.join(runtimeRoot, 'playwright-browsers')
   if (!exists(browsersRoot)) {
@@ -204,13 +327,9 @@ function verifyBundledNodeSkillDependencies() {
   }
 
   const requiredPackages = ['pptxgenjs', 'playwright', 'sharp', 'react', 'react-dom', 'react-icons']
-  const missingPackages = requiredPackages.filter(
-    (pkg) => !exists(path.join(nodeModules, pkg, 'package.json')),
-  )
+  const missingPackages = requiredPackages.filter((pkg) => !exists(path.join(nodeModules, pkg, 'package.json')))
   if (missingPackages.length > 0) {
-    fail(
-      `Missing bundled Node skill dependencies under ${nodeModules}: ${missingPackages.join(', ')}`,
-    )
+    fail(`Missing bundled Node skill dependencies under ${nodeModules}: ${missingPackages.join(', ')}`)
   }
 
   const resolveProbeScript = `
@@ -243,9 +362,7 @@ if (unresolved.length > 0) {
   if (probe.error || probe.status !== 0) {
     const stderr = (probe.stderr || '').toString().trim()
     const stdout = (probe.stdout || '').toString().trim()
-    fail(
-      `Bundled Node dependency resolve probe failed for ${nodePath}.\nstdout: ${stdout}\nstderr: ${stderr}`,
-    )
+    fail(`Bundled Node dependency resolve probe failed for ${nodePath}.\nstdout: ${stdout}\nstderr: ${stderr}`)
   }
 }
 
@@ -253,28 +370,25 @@ function verifyBundledPythonDependencies() {
   const expected = getExpectedRuntimePaths()
   const pythonPath = expected.pythonCandidates.find(exists)
   if (!pythonPath) {
-    fail(
-      `Missing bundled Python runtime. Checked: ${expected.pythonCandidates.join(', ')}`,
-    )
+    fail(`Missing bundled Python runtime. Checked: ${expected.pythonCandidates.join(', ')}`)
   }
 
-  const probe = spawnSync(
-    pythonPath,
-    ['-c', 'import fastapi,uvicorn,openai,yaml,fastmcp,tiktoken,sse_starlette,httpx,defusedxml,lxml,pypdf,pdfplumber,reportlab,pytesseract,pdf2image,PIL,pptx,openpyxl,pandas,numpy; print("ok")'],
-    {
-      cwd: projectRoot,
-      stdio: 'pipe',
-      windowsHide: true,
-      timeout: 12000,
+  const probe = spawnSync(pythonPath, ['-c', getPythonDependencyProbeScript()], {
+    cwd: projectRoot,
+    stdio: 'pipe',
+    windowsHide: true,
+    timeout: 20000,
+    env: {
+      ...process.env,
+      PYTHONNOUSERSITE: '1',
+      PIP_USER: '0',
     },
-  )
+  })
 
   if (probe.error || probe.status !== 0) {
     const stderr = (probe.stderr || '').toString().trim()
     const stdout = (probe.stdout || '').toString().trim()
-    fail(
-      `Bundled Python dependency probe failed for ${pythonPath}.\nstdout: ${stdout}\nstderr: ${stderr}`,
-    )
+    fail(`Bundled Python dependency probe failed for ${pythonPath}.\nstdout: ${stdout}\nstderr: ${stderr}`)
   }
 }
 
@@ -323,8 +437,7 @@ function verifyBundledTools() {
   }
 
   if (missingRequired.length > 0) {
-    const message = `Required bundled tools missing under ${toolsRoot}: ${missingRequired.join(', ')}`
-    reportToolIssue(message, strictTools)
+    reportToolIssue(`Required bundled tools missing under ${toolsRoot}: ${missingRequired.join(', ')}`, strictTools)
   }
 
   if (missingOptional.length > 0) {
@@ -367,10 +480,14 @@ function verifyBundledTools() {
     if (probe.status !== 0) {
       const stderr = (probe.stderr || '').toString().trim()
       const stdout = (probe.stdout || '').toString().trim()
-      reportToolIssue(`Bundled tool probe returned non-zero (${probe.status}) for ${item.tool} at ${item.executable}. stdout: ${stdout} stderr: ${stderr}`, strictTools)
+      reportToolIssue(
+        `Bundled tool probe returned non-zero (${probe.status}) for ${item.tool} at ${item.executable}. stdout: ${stdout} stderr: ${stderr}`,
+        strictTools,
+      )
     }
   }
 }
+
 function verifyMcpLocalEntrypoints() {
   const requiredChecks = [
     path.join(mcpRoot, 'open-websearch', 'node_modules', 'open-websearch', 'build', 'index.js'),
@@ -383,7 +500,6 @@ function verifyMcpLocalEntrypoints() {
     }
   }
 
-  // Optional: rednote can be absent in some repos (e.g. gitlink without submodule mapping).
   const rednoteRoot = path.join(mcpRoot, 'rednote')
   if (exists(rednoteRoot)) {
     const rednoteEntrypoint = path.join(rednoteRoot, 'dist', 'index.js')
@@ -391,6 +507,16 @@ function verifyMcpLocalEntrypoints() {
       console.warn(`[verify:runtimes] Warning: rednote exists but entrypoint missing: ${rednoteEntrypoint}`)
     }
   }
+}
+
+function findBundledChromiumExecutable(browsersRoot) {
+  const names =
+    process.platform === 'win32'
+      ? ['chrome.exe']
+      : process.platform === 'darwin'
+        ? ['Chromium', 'Google Chrome for Testing', 'Google Chrome']
+        : ['chrome', 'chromium', 'chromium-browser']
+  return findExecutableInTree(browsersRoot, names)
 }
 
 function verifyBundledPlaywrightLaunchProbe() {
@@ -447,13 +573,239 @@ function verifyBundledPlaywrightLaunchProbe() {
   }
 }
 
-verifyBundledPythonLayout()
-verifyRuntimeFiles()
-verifyBundledNodeSkillDependencies()
-verifyBundledPythonDependencies()
-verifyBundledTools()
-verifyMcpLocalEntrypoints()
-verifyBundledPlaywrightLaunchProbe()
-console.log('[verify:runtimes] OK: bundled Python/Node/tools, skill JS dependencies, MCP local entrypoints, and Playwright launch probe are present.')
+function getPackagedMacPaths(appPath) {
+  const resourcesRoot = path.join(appPath, 'Contents', 'Resources')
+  return {
+    resourcesRoot,
+    pythonPath: path.join(resourcesRoot, 'python', 'bin', 'python3'),
+    nodePath: path.join(resourcesRoot, 'node', 'bin', 'node'),
+    backendScript: path.join(resourcesRoot, 'agent', 'server', 'app.py'),
+    browsersRoot: path.join(resourcesRoot, 'playwright-browsers'),
+  }
+}
 
+function reserveLoopbackPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.unref()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('Failed to reserve verification port')))
+        return
+      }
+      server.close((error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve(address.port)
+      })
+    })
+  })
+}
 
+function httpGetJson(urlString, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(urlString, { timeout: timeoutMs }, (response) => {
+      let text = ''
+      response.setEncoding('utf8')
+      response.on('data', (chunk) => {
+        text += chunk
+      })
+      response.on('end', () => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`Unexpected status ${response.statusCode}: ${text}`))
+          return
+        }
+        try {
+          resolve(JSON.parse(text))
+        } catch (error) {
+          reject(error)
+        }
+      })
+    })
+    request.on('timeout', () => {
+      request.destroy(new Error(`Request timed out after ${timeoutMs}ms`))
+    })
+    request.on('error', reject)
+  })
+}
+
+async function waitForBackendHealth(urlString, expectedAppId, expectedAppVersion, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = 'health check did not start'
+
+  while (Date.now() < deadline) {
+    try {
+      const payload = await httpGetJson(urlString, 2000)
+      if (payload && payload.status === 'ok' && payload.app_id === expectedAppId && payload.app_version === expectedAppVersion) {
+        return
+      }
+      lastError = `Unexpected payload: ${JSON.stringify(payload)}`
+    } catch (error) {
+      lastError = error && error.message ? error.message : String(error)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+
+  throw new Error(`Backend health check timed out after ${timeoutMs}ms. Last error: ${lastError}`)
+}
+
+async function verifyPackagedBackendStartup(appPath, appVersion) {
+  const expectedAppId = 'com.skills-mcp.desktop'
+  const packaged = getPackagedMacPaths(appPath)
+  const port = await reserveLoopbackPort()
+  const origin = `http://127.0.0.1:${port}`
+  const healthUrl = `${origin}/api/health`
+  const verifyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'paimon-macos-app-verify-'))
+  const runtimeRoot = path.join(verifyRoot, 'workspace-root')
+  const dataRoot = path.join(verifyRoot, 'data-root')
+  const homeDir = path.join(dataRoot, 'home')
+  const appDataDir = path.join(dataRoot, 'electron', 'appData')
+  const cacheDir = path.join(dataRoot, 'electron', 'cache')
+  const tempDir = path.join(dataRoot, 'tmp')
+  const xdgDataDir = path.join(dataRoot, 'xdg', 'data')
+  const xdgStateDir = path.join(dataRoot, 'xdg', 'state')
+
+  for (const dir of [runtimeRoot, homeDir, appDataDir, cacheDir, tempDir, xdgDataDir, xdgStateDir]) {
+    fs.mkdirSync(dir, { recursive: true })
+  }
+
+  const env = {
+    ...process.env,
+    SKILLS_MCP_RUNTIME_ROOT: runtimeRoot,
+    SKILLS_MCP_DATA_ROOT: dataRoot,
+    SKILLS_MCP_PYTHON: packaged.pythonPath,
+    SKILLS_MCP_NODE: packaged.nodePath,
+    SKILLS_MCP_PLAYWRIGHT_BROWSERS: packaged.browsersRoot,
+    PLAYWRIGHT_BROWSERS_PATH: packaged.browsersRoot,
+    SKILLS_MCP_BACKEND_HOST: '127.0.0.1',
+    SKILLS_MCP_BACKEND_PORT: String(port),
+    SKILLS_MCP_BACKEND_APP_ID: expectedAppId,
+    SKILLS_MCP_BACKEND_APP_VERSION: appVersion,
+    PYTHONNOUSERSITE: '1',
+    PIP_USER: '0',
+    HOME: homeDir,
+    USERPROFILE: homeDir,
+    APPDATA: appDataDir,
+    LOCALAPPDATA: cacheDir,
+    TEMP: tempDir,
+    TMP: tempDir,
+    TMPDIR: tempDir,
+    XDG_CONFIG_HOME: appDataDir,
+    XDG_CACHE_HOME: cacheDir,
+    XDG_DATA_HOME: xdgDataDir,
+    XDG_STATE_HOME: xdgStateDir,
+  }
+
+  for (const p of getBundledPythonPathEntries(packaged.pythonPath)) {
+    if (exists(p)) {
+      env.PATH = env.PATH ? `${p}${path.delimiter}${env.PATH}` : p
+    }
+  }
+  if (exists(packaged.nodePath)) {
+    const nodeDir = path.dirname(packaged.nodePath)
+    env.PATH = env.PATH ? `${nodeDir}${path.delimiter}${env.PATH}` : nodeDir
+    const nodeRoot = getBundledNodeRoot(packaged.nodePath)
+    const nodeModules = path.join(nodeRoot, 'node_modules')
+    env.NODE_PATH = env.NODE_PATH ? `${nodeModules}${path.delimiter}${env.NODE_PATH}` : nodeModules
+  }
+
+  const child = spawn(packaged.pythonPath, ['-s', packaged.backendScript], {
+    cwd: runtimeRoot,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  let stdout = ''
+  let stderr = ''
+  child.stdout?.on('data', (chunk) => {
+    stdout += String(chunk)
+  })
+  child.stderr?.on('data', (chunk) => {
+    stderr += String(chunk)
+  })
+
+  let spawnError = null
+  child.on('error', (error) => {
+    spawnError = error
+  })
+
+  try {
+    await waitForBackendHealth(healthUrl, expectedAppId, appVersion, 30000)
+  } catch (error) {
+    try {
+      child.kill('SIGTERM')
+    } catch {}
+    fail(
+      `Packaged backend health probe failed for ${appPath}.\npython: ${packaged.pythonPath}\nbackend: ${packaged.backendScript}\nhealth: ${healthUrl}\nspawnError: ${
+        spawnError ? String(spawnError) : '(none)'
+      }\nstdout: ${stdout.trim()}\nstderr: ${stderr.trim()}\nreason: ${error && error.message ? error.message : String(error)}`,
+    )
+  }
+
+  try {
+    child.kill('SIGTERM')
+  } catch {}
+}
+
+async function verifyPackagedMacApp(appPath, appVersion) {
+  if (process.platform !== 'darwin') {
+    fail(`--app verification is only supported on macOS runners. Current platform: ${process.platform}`)
+  }
+  if (!exists(appPath)) {
+    fail(`Packaged app not found: ${appPath}`)
+  }
+
+  const packaged = getPackagedMacPaths(appPath)
+  const pythonRoot = path.join(packaged.resourcesRoot, 'python')
+  verifyExecutablePath(packaged.pythonPath, 'Packaged app Python runtime', pythonRoot)
+  verifyExecutablePath(packaged.nodePath, 'Packaged app Node runtime', path.join(packaged.resourcesRoot, 'node'))
+
+  if (!exists(packaged.backendScript)) {
+    fail(`Packaged backend script missing: ${packaged.backendScript}`)
+  }
+  if (!exists(packaged.browsersRoot)) {
+    fail(`Packaged Playwright browsers missing: ${packaged.browsersRoot}`)
+  }
+
+  const importProbe = spawnSync(packaged.pythonPath, ['-c', getPythonDependencyProbeScript()], {
+    cwd: packaged.resourcesRoot,
+    stdio: 'pipe',
+    timeout: 20000,
+    env: {
+      ...process.env,
+      PYTHONNOUSERSITE: '1',
+      PIP_USER: '0',
+    },
+  })
+  if (importProbe.error || importProbe.status !== 0) {
+    const stderr = (importProbe.stderr || '').toString().trim()
+    const stdout = (importProbe.stdout || '').toString().trim()
+    fail(`Packaged app Python dependency probe failed for ${packaged.pythonPath}.\nstdout: ${stdout}\nstderr: ${stderr}`)
+  }
+
+  await verifyPackagedBackendStartup(appPath, appVersion)
+  console.log(`[verify:runtimes] OK: packaged mac app verified: ${appPath}`)
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+
+  verifyBundledPythonLayout()
+  verifyRuntimeFiles()
+  verifyBundledNodeSkillDependencies()
+  verifyBundledPythonDependencies()
+  verifyBundledTools()
+  verifyMcpLocalEntrypoints()
+  verifyBundledPlaywrightLaunchProbe()
+  console.log('[verify:runtimes] OK: bundled Python/Node/tools, skill JS dependencies, MCP local entrypoints, and Playwright launch probe are present.')
+
+  if (options.appPath) {
+    await verifyPackagedMacApp(path.resolve(options.appPath), options.appVersion || defaultAppVersion)
+  }
+}
+
+await main()

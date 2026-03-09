@@ -136,55 +136,28 @@ jobs:
             npm prune --prefix mcp-servers/rednote --omit dev
           fi
 
-      - name: Prepare runtime core bundle inputs (python/node/playwright)
-        shell: bash
-        run: |
-          cd "${APP_DIR}"
-          rm -rf runtime/python runtime/node runtime/playwright-browsers
-          mkdir -p runtime/node/bin runtime/playwright-browsers runtime/python
-
-          if [ -z "${pythonLocation:-}" ] || [ ! -x "${pythonLocation}/bin/python3" ]; then
-            echo "setup-python did not provide a usable pythonLocation"
-            exit 1
-          fi
-
-          cp -R "${pythonLocation}/." runtime/python/
-          runtime/python/bin/python3 -m pip install --upgrade pip setuptools wheel
-          runtime/python/bin/python3 -m pip install -r requirements-runtime.txt
-          find runtime/python -type d \( -name "__pycache__" -o -name ".pytest_cache" \) -prune -exec rm -rf {} +
-          find runtime/python -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
-
-          NODE_BIN="$(command -v node)"
-          cp "${NODE_BIN}" runtime/node/bin/node
-          chmod +x runtime/node/bin/node
-
-          PW_VERSION="$(node -p "try{require('./mcp-servers/playwright/node_modules/playwright/package.json').version}catch(e){''}")"
-          REDNOTE_PW_VERSION="$(node -p "try{require('./mcp-servers/rednote/node_modules/playwright/package.json').version}catch(e){''}")"
-
-          if [ -x "./mcp-servers/playwright/node_modules/.bin/playwright" ]; then
-            PLAYWRIGHT_BROWSERS_PATH="$PWD/runtime/playwright-browsers" \
-              ./mcp-servers/playwright/node_modules/.bin/playwright install chromium --no-shell
-          else
-            echo "Playwright CLI not found under mcp-servers/playwright"
-            exit 1
-          fi
-
-          if [ -x "./mcp-servers/rednote/node_modules/.bin/playwright" ] && [ "${PW_VERSION}" != "${REDNOTE_PW_VERSION}" ]; then
-            PLAYWRIGHT_BROWSERS_PATH="$PWD/runtime/playwright-browsers" \
-              ./mcp-servers/rednote/node_modules/.bin/playwright install chromium --no-shell
-          fi
-
-          rm -rf runtime/playwright-browsers/mcp-chrome runtime/playwright-browsers/.links
-
       - name: Install frontend dependencies
         shell: bash
         run: |
+          cd "${APP_DIR}"
           cd "${APP_DIR}/frontend"
           if [ -f "package-lock.json" ]; then
             npm ci
           else
             npm install --no-audit --no-fund
           fi
+
+      - name: Prepare bundled macOS runtimes
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend"
+          npm run prepare:runtimes:mac
+
+      - name: Verify bundled runtimes
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend"
+          npm run verify:runtimes
 
       - name: Build macOS app artifacts (${{ matrix.arch }})
         shell: bash

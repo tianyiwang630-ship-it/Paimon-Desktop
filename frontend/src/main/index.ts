@@ -269,6 +269,15 @@ function getBundledNodePath(): string {
   return path.join(process.resourcesPath, 'node', 'bin', 'node')
 }
 
+function getBundledRuntimeRootFromExecutable(executablePath: string): string {
+  const executableDir = path.dirname(executablePath)
+  const dirName = path.basename(executableDir).toLowerCase()
+  if (dirName === 'bin' || dirName === 'scripts') {
+    return path.dirname(executableDir)
+  }
+  return executableDir
+}
+
 function getBundledPlaywrightBrowsersPath(): string {
   return path.join(process.resourcesPath, 'playwright-browsers')
 }
@@ -282,6 +291,7 @@ function getBundledToolsPathEntries(): string[] {
     if (!entry.isDirectory()) continue
     const payloadRoot = path.join(toolsRoot, entry.name, 'payload')
     const candidates = [
+      payloadRoot,
       path.join(payloadRoot, 'bin'),
       path.join(payloadRoot, 'Contents', 'MacOS'),
       path.join(payloadRoot, 'LibreOffice.app', 'Contents', 'MacOS'),
@@ -510,18 +520,19 @@ function prependPath(currentPath: string | undefined, newDir: string): string {
 
 function getBundledPythonPathEntries(pythonExe: string): string[] {
   const entries: string[] = []
+  const pythonRoot = getBundledRuntimeRootFromExecutable(pythonExe)
   const pythonDir = path.dirname(pythonExe)
 
   entries.push(pythonDir)
 
   if (process.platform === 'win32') {
-    entries.push(path.join(pythonDir, 'Scripts'))
-    entries.push(path.join(pythonDir, 'Library', 'bin'))
-    entries.push(path.join(pythonDir, 'Library', 'usr', 'bin'))
-    entries.push(path.join(pythonDir, 'DLLs'))
+    entries.push(path.join(pythonRoot, 'Scripts'))
+    entries.push(path.join(pythonRoot, 'Library', 'bin'))
+    entries.push(path.join(pythonRoot, 'Library', 'usr', 'bin'))
+    entries.push(path.join(pythonRoot, 'DLLs'))
   } else {
-    entries.push(path.join(pythonDir, 'bin'))
-    entries.push(path.join(pythonDir, 'lib'))
+    entries.push(path.join(pythonRoot, 'bin'))
+    entries.push(path.join(pythonRoot, 'lib'))
   }
 
   return entries
@@ -578,8 +589,9 @@ function buildBackendEnv(
   if (bundledNodePath) {
     env.SKILLS_MCP_NODE = bundledNodePath
     const bundledNodeDir = path.dirname(bundledNodePath)
+    const bundledNodeRoot = getBundledRuntimeRootFromExecutable(bundledNodePath)
     env.PATH = prependPath(env.PATH, bundledNodeDir)
-    env.NODE_PATH = prependPath(env.NODE_PATH, path.join(bundledNodeDir, 'node_modules'))
+    env.NODE_PATH = prependPath(env.NODE_PATH, path.join(bundledNodeRoot, 'node_modules'))
   }
 
   if (playwrightBrowsersPath) {

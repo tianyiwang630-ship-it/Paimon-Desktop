@@ -3,6 +3,7 @@
 ## Scope
 
 This document describes how to package this project into Windows installer EXEs with a reproducible process.
+The maintained operator entrypoint is the root-level `powershell.txt` script.
 
 Included in scope:
 
@@ -61,7 +62,7 @@ Bundled assets are defined in `frontend/package.json` under `build.extraResource
 
 ```powershell
 $ErrorActionPreference = 'Stop'
-$RepoRoot = "D:\files\demo\desk project-Paimon\paimon-desk-assistant"
+$RepoRoot = "D:\files\demo\desk project-Paimon\paimon-desk-assistant-mac"
 $FrontendDir = Join-Path $RepoRoot "frontend"
 $RuntimePy = Join-Path $RepoRoot "runtime\python\python.exe"
 $ReqRuntime = Join-Path $RepoRoot "requirements-runtime.txt"
@@ -187,9 +188,9 @@ Runtime sanity checks:
 - Cause: browser channel/config and installed browser artifact do not align.
 - Fix: force `PLAYWRIGHT_MCP_BROWSER=chromium` and use runtime browser path `D:\PaimonData\Local\ms-playwright`.
 
-5. Bundled browser path hard dependency blocks startup
-- Cause: packaged runtime required `resources/playwright-browsers` to exist.
-- Fix: treat bundled assets as optional seed only; if missing or empty, continue startup and allow runtime auto-download.
+5. Bundled browser assets must be packaged up front
+- Cause: relying on first-run browser auto-download makes packaged startup less deterministic.
+- Fix: prepare and verify `runtime/playwright-browsers` before packaging and bundle it into the installer.
 
 6. MCP server packaged but not runnable
 - Cause: missing local entrypoint or missing `node_modules/dist` in server folder.
@@ -224,7 +225,7 @@ Then run the EXE copy step from Full Flow (Step G).
 - Action: verify `runtime/node` exists and that `frontend/package.json` includes it in `extraResources`.
 
 3. Bundled Playwright browsers not found
-- Action: packaged app should still start. It will attempt runtime auto-download into `D:\PaimonData\Local\ms-playwright`. If you need faster first run, rerun `npm run prepare:runtimes` and include `runtime/playwright-browsers` as seed assets.
+- Action: rerun `npm run prepare:runtimes`, then rerun `npm run verify:runtimes`. Packaging should not proceed without bundled browser assets.
 
 4. MCP server unavailable after packaging
 - Action: inspect `resources/mcp-servers/<server>` for entrypoint and dependencies (`dist`, `node_modules`, config files).

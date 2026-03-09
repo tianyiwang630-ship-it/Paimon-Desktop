@@ -9,6 +9,7 @@
     "build:renderer": "vite build",
     "build": "npm run build:main && npm run build:renderer",
     "prepare:runtimes": "powershell -ExecutionPolicy Bypass -File scripts/prepare-bundled-runtimes.ps1",
+    "prepare:runtimes:mac": "bash scripts/prepare-bundled-runtimes-macos.sh",
     "verify:runtimes": "node scripts/verify-bundled-runtimes.mjs",
     "electron:dev": "concurrently \"npm run dev\" \"npm run build:main -- --watch\" \"wait-on http://localhost:5173 dist/main/index.js && electron .\"",
     "electron:build": "npm run verify:runtimes && npm run build && electron-builder",

@@ -17,7 +17,10 @@ def _resolve_executable_parent(value: str) -> Path:
     candidate = Path(value).expanduser()
     name = candidate.name.lower()
     if name in {"python", "python3", "python.exe", "node", "node.exe"}:
-        return candidate.parent.resolve()
+        parent = candidate.parent
+        if parent.name.lower() in {"bin", "scripts"}:
+            return parent.parent.resolve()
+        return parent.resolve()
     if candidate.suffix.lower() in {".exe", ".bin"}:
         return candidate.parent.resolve()
     return candidate.resolve()

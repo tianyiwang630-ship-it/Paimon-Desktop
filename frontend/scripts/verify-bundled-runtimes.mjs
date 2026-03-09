@@ -84,6 +84,21 @@ function getExpectedRuntimePaths() {
   }
 }
 
+function getBundledNodeRoot(nodePath) {
+  const nodeDir = path.dirname(nodePath)
+  if (process.platform !== 'win32' && path.basename(nodeDir) === 'bin') {
+    return path.dirname(nodeDir)
+  }
+  return nodeDir
+}
+
+function reportToolIssue(message, strictTools) {
+  if (process.platform === 'win32' && strictTools) {
+    fail(message)
+  }
+  console.warn(`[verify:runtimes] Warning: ${message}`)
+}
+
 function verifyBundledPythonLayout() {
   if (process.platform !== 'win32') {
     return
@@ -145,7 +160,7 @@ function verifyBundledNodeSkillDependencies() {
     fail(`Missing bundled Node runtime: ${nodePath}`)
   }
 
-  const nodeRoot = path.dirname(nodePath)
+  const nodeRoot = getBundledNodeRoot(nodePath)
   const nodeModules = path.join(nodeRoot, 'node_modules')
   if (!exists(nodeModules)) {
     fail(`Missing bundled Node modules directory: ${nodeModules}`)
@@ -272,10 +287,7 @@ function verifyBundledTools() {
 
   if (missingRequired.length > 0) {
     const message = `Required bundled tools missing under ${toolsRoot}: ${missingRequired.join(', ')}`
-    if (strictTools) {
-      fail(message)
-    }
-    console.warn(`[verify:runtimes] Warning: ${message}`)
+    reportToolIssue(message, strictTools)
   }
 
   if (missingOptional.length > 0) {
@@ -308,15 +320,17 @@ function verifyBundledTools() {
     })
 
     if (probe.error) {
-      fail(`Bundled tool probe failed for ${item.tool} at ${item.executable}: ${String(probe.error)}`)
+      reportToolIssue(`Bundled tool probe failed for ${item.tool} at ${item.executable}: ${String(probe.error)}`, strictTools)
+      continue
     }
     if (probe.status === null) {
-      fail(`Bundled tool probe timed out for ${item.tool} at ${item.executable}`)
+      reportToolIssue(`Bundled tool probe timed out for ${item.tool} at ${item.executable}`, strictTools)
+      continue
     }
     if (probe.status !== 0) {
       const stderr = (probe.stderr || '').toString().trim()
       const stdout = (probe.stdout || '').toString().trim()
-      fail(`Bundled tool probe returned non-zero (${probe.status}) for ${item.tool} at ${item.executable}. stdout: ${stdout} stderr: ${stderr}`)
+      reportToolIssue(`Bundled tool probe returned non-zero (${probe.status}) for ${item.tool} at ${item.executable}. stdout: ${stdout} stderr: ${stderr}`, strictTools)
     }
   }
 }

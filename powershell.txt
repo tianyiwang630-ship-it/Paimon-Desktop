@@ -1,63 +1,129 @@
 $ErrorActionPreference = 'Stop'
 
 # ===== Paths =====
-$RepoRoot = "D:\files\demo\desk project-Paimon\paimon-desk-assistant"
+$RepoRoot = "D:\files\demo\desk project-Paimon\paimon-desk-assistant-mac"
 $FrontendDir = Join-Path $RepoRoot "frontend"
-$RuntimePy = Join-Path $RepoRoot "runtime\python\python.exe"
-$ReqRuntime = Join-Path $RepoRoot "requirements-runtime.txt"
 $WindowsOutRoot = Join-Path $RepoRoot "windows"
+
+$McpDirs = @(
+  (Join-Path $RepoRoot "mcp-servers\open-websearch"),
+  (Join-Path $RepoRoot "mcp-servers\playwright"),
+  (Join-Path $RepoRoot "mcp-servers\rednote")
+)
+
+# ===== Helpers =====
+function Invoke-NpmInstallInDir {
+  param(
+    [Parameter(Mandatory = $true)][string]$WorkingDirectory
+  )
+
+  if (-not (Test-Path -LiteralPath $WorkingDirectory)) {
+    return
+  }
+
+  $packageJson = Join-Path $WorkingDirectory "package.json"
+  if (-not (Test-Path -LiteralPath $packageJson)) {
+    return
+  }
+
+  Push-Location $WorkingDirectory
+  try {
+    if (Test-Path -LiteralPath "package-lock.json") {
+      cmd /c "npm ci"
+    }
+    else {
+      cmd /c "npm install --no-audit --no-fund"
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+      throw "npm install failed in $WorkingDirectory"
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
+function Invoke-CmdChecked {
+  param(
+    [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+    [Parameter(Mandatory = $true)][string]$CommandLine
+  )
+
+  Push-Location $WorkingDirectory
+  try {
+    cmd /c $CommandLine
+    if ($LASTEXITCODE -ne 0) {
+      throw "Command failed in ${WorkingDirectory}: $CommandLine"
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
+function Get-InstallerExe {
+  param(
+    [Parameter(Mandatory = $true)][string]$SearchRoot
+  )
+
+  $installer = Get-ChildItem -Path $SearchRoot -Recurse -File -Filter *.exe |
+    Where-Object { $_.Name -notmatch '^(uninstall|unins)' } |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+
+  if (-not $installer) {
+    throw "Installer exe not found under: $SearchRoot"
+  }
+
+  return $installer
+}
 
 # ===== Output folder (timestamp, no overwrite) =====
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$RunOut = Join-Path $WindowsOutRoot ("exe-only-" + $stamp)
-if (Test-Path $RunOut) {
-  $RunOut = Join-Path $WindowsOutRoot ("exe-only-" + (Get-Date -Format "yyyyMMdd-HHmmssfff"))
+$RunOut = Join-Path $WindowsOutRoot ("installer-" + $stamp)
+if (Test-Path -LiteralPath $RunOut) {
+  $RunOut = Join-Path $WindowsOutRoot ("installer-" + (Get-Date -Format "yyyyMMdd-HHmmssfff"))
 }
+
 $X64Out = Join-Path $RunOut "x64"
 $Arm64Out = Join-Path $RunOut "arm64"
 New-Item -ItemType Directory -Force -Path $X64Out, $Arm64Out | Out-Null
 
-# ===== Ensure runtime deps =====
-if (-not (Test-Path -LiteralPath $RuntimePy)) { throw "Missing runtime python: $RuntimePy" }
-if (-not (Test-Path -LiteralPath $ReqRuntime)) { throw "Missing requirements file: $ReqRuntime" }
-
-& $RuntimePy -m pip --isolated install --no-user --upgrade pip setuptools wheel
-& $RuntimePy -m pip --isolated install --no-user -r $ReqRuntime
-
-# ===== Clean only per-arch release dirs for this run =====
+# ===== Clean current per-arch release dirs =====
 $ReleaseX64 = Join-Path $FrontendDir "release-x64"
 $ReleaseArm64 = Join-Path $FrontendDir "release-arm64"
-if (Test-Path $ReleaseX64) { Remove-Item -LiteralPath $ReleaseX64 -Recurse -Force }
-if (Test-Path $ReleaseArm64) { Remove-Item -LiteralPath $ReleaseArm64 -Recurse -Force }
 
-Push-Location $FrontendDir
-try {
-  npm run prepare:runtimes
-  npm run verify:runtimes
-  npm run build:main
-  npm run build:renderer
-
-  # ===== Build x64 =====
-  npx electron-builder --win nsis --x64 --publish never --config.directories.output=release-x64
-  $x64Exe = Get-ChildItem -Path $ReleaseX64 -Recurse -File -Filter *.exe |
-    Where-Object { $_.Name -notmatch '^(uninstall|unins)' } |
-    Select-Object -First 1
-  if (-not $x64Exe) { throw "x64 exe not found in $ReleaseX64" }
-  Copy-Item -LiteralPath $x64Exe.FullName -Destination (Join-Path $X64Out "Paimon-x64.exe") -Force:$false
-
-  # ===== Build arm64 =====
-  npx electron-builder --win nsis --arm64 --publish never --config.directories.output=release-arm64
-  $arm64Exe = Get-ChildItem -Path $ReleaseArm64 -Recurse -File -Filter *.exe |
-    Where-Object { $_.Name -notmatch '^(uninstall|unins)' } |
-    Select-Object -First 1
-  if (-not $arm64Exe) { throw "arm64 exe not found in $ReleaseArm64" }
-  Copy-Item -LiteralPath $arm64Exe.FullName -Destination (Join-Path $Arm64Out "Paimon-arm64.exe") -Force:$false
+if (Test-Path -LiteralPath $ReleaseX64) {
+  Remove-Item -LiteralPath $ReleaseX64 -Recurse -Force
 }
-finally {
-  Pop-Location
+if (Test-Path -LiteralPath $ReleaseArm64) {
+  Remove-Item -LiteralPath $ReleaseArm64 -Recurse -Force
 }
+
+# ===== Install dependencies =====
+Invoke-NpmInstallInDir -WorkingDirectory $FrontendDir
+foreach ($dir in $McpDirs) {
+  Invoke-NpmInstallInDir -WorkingDirectory $dir
+}
+
+# ===== Prepare runtimes + verify + build =====
+Invoke-CmdChecked -WorkingDirectory $FrontendDir -CommandLine "npm run prepare:runtimes"
+Invoke-CmdChecked -WorkingDirectory $FrontendDir -CommandLine "npm run verify:runtimes"
+Invoke-CmdChecked -WorkingDirectory $FrontendDir -CommandLine "npm run build:main"
+Invoke-CmdChecked -WorkingDirectory $FrontendDir -CommandLine "npm run build:renderer"
+
+# ===== Build x64 installer =====
+Invoke-CmdChecked -WorkingDirectory $FrontendDir -CommandLine "npx electron-builder --win nsis --x64 --publish never --config.directories.output=release-x64"
+$x64Exe = Get-InstallerExe -SearchRoot $ReleaseX64
+Copy-Item -LiteralPath $x64Exe.FullName -Destination (Join-Path $X64Out "Paimon-x64.exe") -Force
+
+# ===== Build arm64 installer =====
+Invoke-CmdChecked -WorkingDirectory $FrontendDir -CommandLine "npx electron-builder --win nsis --arm64 --publish never --config.directories.output=release-arm64"
+$arm64Exe = Get-InstallerExe -SearchRoot $ReleaseArm64
+Copy-Item -LiteralPath $arm64Exe.FullName -Destination (Join-Path $Arm64Out "Paimon-arm64.exe") -Force
 
 Write-Host ""
-Write-Host "Done. Two EXEs generated (not overwritten):"
+Write-Host "Done. Two Windows installers generated:"
 Write-Host "x64   -> $(Join-Path $X64Out 'Paimon-x64.exe')"
 Write-Host "arm64 -> $(Join-Path $Arm64Out 'Paimon-arm64.exe')"

@@ -334,8 +334,202 @@ function runPlaywrightLaunchProbe({
   }
 }
 
-function getPythonDependencyProbeScript() {
-  return 'import fastapi,uvicorn,openai,yaml,fastmcp,tiktoken,sse_starlette,httpx,defusedxml,lxml,pypdf,pdfplumber,reportlab,pytesseract,pdf2image,PIL,pptx,openpyxl,pandas,numpy; print("ok")'
+const PYTHON_DEPENDENCY_PROBE_GROUPS = [
+  {
+    label: 'core',
+    timeoutMs: 30000,
+    imports: ['fastapi', 'uvicorn', 'openai', 'yaml', 'fastmcp', 'httpx'],
+  },
+  {
+    label: 'documents',
+    timeoutMs: 45000,
+    imports: ['defusedxml', 'lxml', 'pypdf', 'pdfplumber', 'reportlab', 'PIL', 'pptx', 'openpyxl'],
+  },
+  {
+    label: 'data',
+    timeoutMs: 60000,
+    imports: ['numpy', 'pandas'],
+  },
+]
+
+function getPythonContextProbeScript() {
+  return `
+import platform
+import sys
+
+print(f"sys.executable={sys.executable}", flush=True)
+print(f"sys.version={sys.version.replace(chr(10), ' ')}", flush=True)
+print(f"platform={platform.platform()}", flush=True)
+print(f"machine={platform.machine()}", flush=True)
+`.trim()
+}
+
+function getPythonImportProbeScript(imports) {
+  const renderedImports = `[${imports.map((item) => JSON.stringify(item)).join(', ')}]`
+  return `
+import importlib
+
+modules = ${renderedImports}
+for module_name in modules:
+    importlib.import_module(module_name)
+print("ok", flush=True)
+`.trim()
+}
+
+function runPythonProbeCommand({ pythonPath, cwd, env, timeoutMs, script }) {
+  const startedAt = Date.now()
+  const probe = spawnSync(pythonPath, ['-c', script], {
+    cwd,
+    stdio: 'pipe',
+    windowsHide: true,
+    timeout: timeoutMs,
+    env,
+  })
+  const elapsedMs = Date.now() - startedAt
+  const stdout = (probe.stdout || '').toString().trim()
+  const stderr = (probe.stderr || '').toString().trim()
+  const errorText = probe.error
+    ? probe.error && probe.error.stack
+      ? probe.error.stack
+      : probe.error.message || String(probe.error)
+    : ''
+  const timedOut = Boolean(probe.error && probe.error.code === 'ETIMEDOUT')
+
+  return {
+    status: probe.status,
+    signal: probe.signal,
+    stdout,
+    stderr,
+    errorText,
+    elapsedMs,
+    timedOut,
+  }
+}
+
+function formatPythonProbeDiagnostics({ scopeLabel, pythonPath, probeLabel, imports, timeoutMs, result }) {
+  return [
+    `${scopeLabel} Python dependency probe details:`,
+    `python: ${pythonPath}`,
+    `probe label: ${probeLabel}`,
+    `imports: ${imports.length > 0 ? imports.join(', ') : '(none)'}`,
+    `timeout ms: ${timeoutMs}`,
+    `elapsed ms: ${result.elapsedMs}`,
+    `status: ${result.status === null ? 'null' : String(result.status)}`,
+    `signal: ${result.signal || '(none)'}`,
+    `timed out: ${result.timedOut ? 'yes' : 'no'}`,
+    `probe.error: ${result.errorText || '(none)'}`,
+    `stdout: ${result.stdout || '(empty)'}`,
+    `stderr: ${result.stderr || '(empty)'}`,
+  ].join('\n')
+}
+
+function isolatePythonImportFailure({ pythonPath, cwd, env, scopeLabel, group }) {
+  for (const moduleName of group.imports) {
+    const result = runPythonProbeCommand({
+      pythonPath,
+      cwd,
+      env,
+      timeoutMs: group.timeoutMs,
+      script: getPythonImportProbeScript([moduleName]),
+    })
+    if (result.errorText || result.status !== 0) {
+      return {
+        moduleName,
+        result,
+        diagnostics: formatPythonProbeDiagnostics({
+          scopeLabel,
+          pythonPath,
+          probeLabel: `${group.label} single-module`,
+          imports: [moduleName],
+          timeoutMs: group.timeoutMs,
+          result,
+        }),
+      }
+    }
+  }
+
+  return null
+}
+
+function verifyPythonDependencyProbes({ pythonPath, cwd, env, scopeLabel }) {
+  const contextProbe = runPythonProbeCommand({
+    pythonPath,
+    cwd,
+    env,
+    timeoutMs: 15000,
+    script: getPythonContextProbeScript(),
+  })
+
+  if (contextProbe.errorText || contextProbe.status !== 0) {
+    fail(
+      `${scopeLabel} Python interpreter context probe failed.\n${formatPythonProbeDiagnostics({
+        scopeLabel,
+        pythonPath,
+        probeLabel: 'context',
+        imports: [],
+        timeoutMs: 15000,
+        result: contextProbe,
+      })}`,
+    )
+  }
+
+  console.log(`[verify:runtimes] ${scopeLabel} Python interpreter context:\npython executable=${pythonPath}\n${contextProbe.stdout}`)
+
+  for (const group of PYTHON_DEPENDENCY_PROBE_GROUPS) {
+    console.log(
+      `[verify:runtimes] ${scopeLabel} Python dependency probe start: ${group.label} (${group.imports.join(', ')})`,
+    )
+
+    const result = runPythonProbeCommand({
+      pythonPath,
+      cwd,
+      env,
+      timeoutMs: group.timeoutMs,
+      script: getPythonImportProbeScript(group.imports),
+    })
+
+    if (!result.errorText && result.status === 0) {
+      console.log(
+        `[verify:runtimes] ${scopeLabel} Python dependency probe passed: ${group.label} (${result.elapsedMs}ms)`,
+      )
+      continue
+    }
+
+    const summary =
+      result.timedOut
+        ? `${scopeLabel} Python dependency probe timed out.`
+        : result.signal
+          ? `${scopeLabel} Python dependency probe terminated by signal.`
+          : `${scopeLabel} Python dependency probe failed.`
+    const diagnostics = formatPythonProbeDiagnostics({
+      scopeLabel,
+      pythonPath,
+      probeLabel: group.label,
+      imports: group.imports,
+      timeoutMs: group.timeoutMs,
+      result,
+    })
+
+    if (result.timedOut) {
+      fail(`${summary}\n${diagnostics}`)
+    }
+
+    const isolatedFailure = isolatePythonImportFailure({
+      pythonPath,
+      cwd,
+      env,
+      scopeLabel,
+      group,
+    })
+
+    if (isolatedFailure) {
+      fail(
+        `${summary}\n${diagnostics}\nFailed while importing ${isolatedFailure.moduleName}.\n${isolatedFailure.diagnostics}`,
+      )
+    }
+
+    fail(`${summary}\n${diagnostics}\nSingle-module retry could not isolate a specific package failure.`)
+  }
 }
 
 function inspectPath(filePath) {
@@ -521,11 +715,9 @@ function verifyBundledPythonDependencies() {
   }
 
   const sandbox = createProbeSandbox('paimon-python-probe-')
-  const probe = spawnSync(pythonPath, ['-c', getPythonDependencyProbeScript()], {
+  verifyPythonDependencyProbes({
+    pythonPath,
     cwd: projectRoot,
-    stdio: 'pipe',
-    windowsHide: true,
-    timeout: 20000,
     env: buildSanitizedEnv({
       HOME: sandbox.homeDir,
       USERPROFILE: sandbox.homeDir,
@@ -541,13 +733,8 @@ function verifyBundledPythonDependencies() {
       PYTHONNOUSERSITE: '1',
       PIP_USER: '0',
     }),
+    scopeLabel: 'Bundled',
   })
-
-  if (probe.error || probe.status !== 0) {
-    const stderr = (probe.stderr || '').toString().trim()
-    const stdout = (probe.stdout || '').toString().trim()
-    fail(`Bundled Python dependency probe failed for ${pythonPath}.\nstdout: ${stdout}\nstderr: ${stderr}`)
-  }
 }
 
 function verifyBundledTools() {
@@ -887,10 +1074,9 @@ async function verifyPackagedMacApp(appPath, appVersion) {
   }
 
   const sandbox = createProbeSandbox('paimon-packaged-import-')
-  const importProbe = spawnSync(packaged.pythonPath, ['-c', getPythonDependencyProbeScript()], {
+  verifyPythonDependencyProbes({
+    pythonPath: packaged.pythonPath,
     cwd: packaged.resourcesRoot,
-    stdio: 'pipe',
-    timeout: 20000,
     env: buildSanitizedEnv({
       HOME: sandbox.homeDir,
       USERPROFILE: sandbox.homeDir,
@@ -906,12 +1092,8 @@ async function verifyPackagedMacApp(appPath, appVersion) {
       PYTHONNOUSERSITE: '1',
       PIP_USER: '0',
     }),
+    scopeLabel: 'Packaged app',
   })
-  if (importProbe.error || importProbe.status !== 0) {
-    const stderr = (importProbe.stderr || '').toString().trim()
-    const stdout = (importProbe.stdout || '').toString().trim()
-    fail(`Packaged app Python dependency probe failed for ${packaged.pythonPath}.\nstdout: ${stdout}\nstderr: ${stderr}`)
-  }
 
   runPlaywrightLaunchProbe({
     nodePath: packaged.nodePath,

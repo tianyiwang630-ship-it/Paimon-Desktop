@@ -352,6 +352,14 @@ function getBundledPlaywrightBrowsersPath(): string {
   return path.join(process.resourcesPath, 'playwright-browsers')
 }
 
+function getPlaywrightMcpCliPath(): string {
+  const pathParts = ['mcp-servers', 'playwright', 'node_modules', '@playwright', 'mcp', 'cli.js']
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, ...pathParts)
+  }
+  return path.join(__dirname, '../../../', ...pathParts)
+}
+
 function getBundledToolsPathEntries(): string[] {
   const toolsRoot = path.join(process.resourcesPath, 'tools')
   if (!existsSync(toolsRoot)) return []
@@ -374,6 +382,173 @@ function getBundledToolsPathEntries(): string[] {
   }
 
   return Array.from(new Set(entries))
+}
+
+function getPlaywrightLaunchProbeScript(): string {
+  return `
+const { chromium } = require('playwright');
+(async () => {
+  const executablePath = process.env.PLAYWRIGHT_PROBE_EXECUTABLE_PATH;
+  if (!executablePath) {
+    throw new Error('Missing PLAYWRIGHT_PROBE_EXECUTABLE_PATH');
+  }
+  const browser = await chromium.launch({ headless: true, executablePath });
+  await browser.close();
+  console.log('ok');
+})().catch((error) => {
+  const text = error && (error.stack || error.message) ? (error.stack || error.message) : String(error);
+  console.error(text);
+  process.exit(1);
+});
+`.trim()
+}
+
+function findExecutableInTree(rootDir: string, executableNames: string[]): string | null {
+  if (!existsSync(rootDir)) return null
+  const candidates = executableNames.map((name) => name.toLowerCase())
+  const queue = [rootDir]
+
+  while (queue.length > 0) {
+    const current = queue.pop()
+    if (!current) continue
+    let entries
+    try {
+      entries = readdirSync(current, { withFileTypes: true })
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        queue.push(fullPath)
+        continue
+      }
+      if (entry.isFile() && candidates.includes(entry.name.toLowerCase())) {
+        return fullPath
+      }
+    }
+  }
+
+  return null
+}
+
+function findBundledChromiumExecutable(browsersPath: string): string | null {
+  const executableNames =
+    process.platform === 'win32'
+      ? ['chrome.exe']
+      : process.platform === 'darwin'
+        ? ['Chromium', 'Google Chrome for Testing', 'Google Chrome']
+        : ['chrome', 'chromium', 'chromium-browser']
+  return findExecutableInTree(browsersPath, executableNames)
+}
+
+function logPackagedPlaywrightContext(
+  bundledNodePath: string | null,
+  bundledPlaywrightBrowsersPath: string | null,
+  runtimePlaywrightBrowsersPath: string | null,
+): void {
+  if (!app.isPackaged) return
+
+  const mcpCliPath = getPlaywrightMcpCliPath()
+  const cliState = existsSync(mcpCliPath) ? 'present' : 'missing'
+  logBackendStartup(
+    existsSync(mcpCliPath) ? 'info' : 'warn',
+    `[Playwright MCP] Local entrypoint ${cliState}: ${mcpCliPath}`,
+  )
+
+  if (bundledNodePath) {
+    logBackendStartup(
+      existsSync(bundledNodePath) ? 'info' : 'warn',
+      `[Playwright MCP] Bundled node path: ${bundledNodePath}`,
+    )
+  }
+
+  if (bundledPlaywrightBrowsersPath) {
+    const bundledAssets = existsSync(bundledPlaywrightBrowsersPath)
+      ? listPlaywrightAssets(bundledPlaywrightBrowsersPath)
+      : []
+    logBackendStartup(
+      existsSync(bundledPlaywrightBrowsersPath) ? 'info' : 'warn',
+      `[Playwright MCP] Bundled browsers path: ${bundledPlaywrightBrowsersPath} | assets: ${
+        bundledAssets.length > 0 ? bundledAssets.join(', ') : existsSync(bundledPlaywrightBrowsersPath) ? '(empty)' : '(missing)'
+      }`,
+    )
+  }
+
+  if (runtimePlaywrightBrowsersPath) {
+    const runtimeAssets = existsSync(runtimePlaywrightBrowsersPath)
+      ? listPlaywrightAssets(runtimePlaywrightBrowsersPath)
+      : []
+    const chromiumExecutable = existsSync(runtimePlaywrightBrowsersPath)
+      ? findBundledChromiumExecutable(runtimePlaywrightBrowsersPath)
+      : null
+    logBackendStartup(
+      existsSync(runtimePlaywrightBrowsersPath) ? 'info' : 'warn',
+      `[Playwright MCP] Runtime browsers path: ${runtimePlaywrightBrowsersPath} | assets: ${
+        runtimeAssets.length > 0 ? runtimeAssets.join(', ') : existsSync(runtimePlaywrightBrowsersPath) ? '(empty)' : '(missing)'
+      } | chromium: ${chromiumExecutable || '(missing)'}`,
+    )
+  }
+}
+
+function runPackagedPlaywrightSelfCheck(nodePath: string, browsersPath: string): void {
+  const mcpCliPath = getPlaywrightMcpCliPath()
+  if (!existsSync(nodePath)) {
+    logBackendStartup('warn', `[Playwright Self Check] Skip: bundled node missing at ${nodePath}`)
+    return
+  }
+  if (!existsSync(browsersPath)) {
+    logBackendStartup('warn', `[Playwright Self Check] Skip: browsers path missing at ${browsersPath}`)
+    return
+  }
+  if (!existsSync(mcpCliPath)) {
+    logBackendStartup('warn', `[Playwright Self Check] Skip: MCP entrypoint missing at ${mcpCliPath}`)
+    return
+  }
+  const chromiumExecutable = findBundledChromiumExecutable(browsersPath)
+  if (!chromiumExecutable) {
+    logBackendStartup('warn', `[Playwright Self Check] Skip: Chromium executable missing under ${browsersPath}`)
+    return
+  }
+
+  const nodeDir = path.dirname(nodePath)
+  const nodeRoot = path.basename(nodeDir) === 'bin' ? path.dirname(nodeDir) : nodeDir
+  const nodeModules = path.join(nodeRoot, 'node_modules')
+  const probe = spawnSync(nodePath, ['-e', getPlaywrightLaunchProbeScript()], {
+    cwd: nodeRoot,
+    stdio: 'pipe',
+    windowsHide: true,
+    timeout: 45000,
+    env: {
+      ...process.env,
+      NODE_PATH: nodeModules,
+      PLAYWRIGHT_BROWSERS_PATH: browsersPath,
+      SKILLS_MCP_PLAYWRIGHT_BROWSERS: browsersPath,
+      PLAYWRIGHT_PROBE_EXECUTABLE_PATH: chromiumExecutable,
+    },
+  })
+
+  if (!probe.error && probe.status === 0) {
+    logBackendStartup('info', `[Playwright Self Check] Passed for packaged mac runtime using ${nodePath}`)
+    return
+  }
+
+  const stdout = (probe.stdout || '').toString().trim()
+  const stderr = (probe.stderr || '').toString().trim()
+  const details = [
+    `node=${nodePath}`,
+    `browsers=${browsersPath}`,
+    `chromium=${chromiumExecutable}`,
+    `mcp=${mcpCliPath}`,
+    probe.error ? `error=${String(probe.error)}` : '',
+    probe.status === null ? 'status=null' : `status=${probe.status}`,
+    stdout ? `stdout=${stdout}` : '',
+    stderr ? `stderr=${stderr}` : '',
+  ]
+    .filter(Boolean)
+    .join(' | ')
+  logBackendStartup('warn', `[Playwright Self Check] Failed for packaged mac runtime | ${details}`)
 }
 
 function getWindowsPlaywrightBrowsersPath(): string | null {
@@ -922,6 +1097,11 @@ async function startPythonBackend(): Promise<{ ok: boolean; reason?: string }> {
     } else {
       seedPlaywrightBrowsersFromBundled(bundledPlaywrightBrowsersPath, runtimePlaywrightBrowsersPath)
     }
+  }
+
+  logPackagedPlaywrightContext(bundledNodePath, bundledPlaywrightBrowsersPath, runtimePlaywrightBrowsersPath)
+  if (app.isPackaged && process.platform === 'darwin' && bundledNodePath && runtimePlaywrightBrowsersPath) {
+    runPackagedPlaywrightSelfCheck(bundledNodePath, runtimePlaywrightBrowsersPath)
   }
 
   const candidates = getPythonCandidates()

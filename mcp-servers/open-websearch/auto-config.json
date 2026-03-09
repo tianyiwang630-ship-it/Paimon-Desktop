@@ -10,7 +10,7 @@
     "DEFAULT_SEARCH_ENGINE": "duckduckgo",
     "MODE": "stdio"
   },
-  "cwd": "D:\\files\\demo\\desk project-Paimon\\paimon-desk-assistant\\mcp-servers\\open-websearch",
+  "cwd": "D:\\files\\demo\\desk project-Paimon\\paimon-desk-assistant-mac\\mcp-servers\\open-websearch",
   "description": "Multi-engine web search (Bing, DuckDuckGo, Exa, Brave, Baidu, etc.)",
   "source": "custom"
 }

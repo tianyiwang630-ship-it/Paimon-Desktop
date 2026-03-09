@@ -9,7 +9,7 @@
   "env": {
     "PLAYWRIGHT_MCP_BROWSER": "chromium"
   },
-  "cwd": "D:\\files\\demo\\desk project-Paimon\\paimon-desk-assistant\\mcp-servers\\playwright",
+  "cwd": "D:\\files\\demo\\desk project-Paimon\\paimon-desk-assistant-mac\\mcp-servers\\playwright",
   "description": "Playwright browser automation",
   "source": "custom"
 }

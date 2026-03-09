@@ -92,6 +92,43 @@ function getBundledNodeRoot(nodePath) {
   return nodeDir
 }
 
+function getPlaywrightBrowsersRoot() {
+  return path.join(runtimeRoot, 'playwright-browsers')
+}
+
+function getPlaywrightMcpCliPath() {
+  return path.join(mcpRoot, 'playwright', 'node_modules', '@playwright', 'mcp', 'cli.js')
+}
+
+function getPlaywrightLaunchProbeScript() {
+  return `
+const { chromium } = require('playwright');
+(async () => {
+  const executablePath = process.env.PLAYWRIGHT_PROBE_EXECUTABLE_PATH;
+  if (!executablePath) {
+    throw new Error('Missing PLAYWRIGHT_PROBE_EXECUTABLE_PATH');
+  }
+  const browser = await chromium.launch({ headless: true, executablePath });
+  await browser.close();
+  console.log('ok');
+})().catch((error) => {
+  const text = error && (error.stack || error.message) ? (error.stack || error.message) : String(error);
+  console.error(text);
+  process.exit(1);
+});
+`.trim()
+}
+
+function findBundledChromiumExecutable(browsersRoot) {
+  const names =
+    process.platform === 'win32'
+      ? ['chrome.exe']
+      : process.platform === 'darwin'
+        ? ['Chromium', 'Google Chrome for Testing', 'Google Chrome']
+        : ['chrome', 'chromium', 'chromium-browser']
+  return findExecutableInTree(browsersRoot, names)
+}
+
 function reportToolIssue(message, strictTools) {
   if (process.platform === 'win32' && strictTools) {
     fail(message)
@@ -337,7 +374,7 @@ function verifyBundledTools() {
 function verifyMcpLocalEntrypoints() {
   const requiredChecks = [
     path.join(mcpRoot, 'open-websearch', 'node_modules', 'open-websearch', 'build', 'index.js'),
-    path.join(mcpRoot, 'playwright', 'node_modules', '@playwright', 'mcp', 'cli.js'),
+    getPlaywrightMcpCliPath(),
   ]
 
   for (const filePath of requiredChecks) {
@@ -356,12 +393,67 @@ function verifyMcpLocalEntrypoints() {
   }
 }
 
+function verifyBundledPlaywrightLaunchProbe() {
+  const expected = getExpectedRuntimePaths()
+  const nodePath = expected.node
+  if (!exists(nodePath)) {
+    fail(`Missing bundled Node runtime for Playwright probe: ${nodePath}`)
+  }
+
+  const browsersRoot = getPlaywrightBrowsersRoot()
+  if (!exists(browsersRoot)) {
+    fail(`Missing bundled Playwright browsers directory for probe: ${browsersRoot}`)
+  }
+
+  const browserEntries = fs
+    .readdirSync(browsersRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+  if (browserEntries.length === 0) {
+    fail(`Bundled Playwright browsers directory is empty for probe: ${browsersRoot}`)
+  }
+
+  const mcpCliPath = getPlaywrightMcpCliPath()
+  if (!exists(mcpCliPath)) {
+    fail(`Missing Playwright MCP local entrypoint for probe: ${mcpCliPath}`)
+  }
+
+  const chromiumExecutable = findBundledChromiumExecutable(browsersRoot)
+  if (!chromiumExecutable) {
+    fail(`Bundled Playwright Chromium executable not found under: ${browsersRoot}`)
+  }
+
+  const nodeRoot = getBundledNodeRoot(nodePath)
+  const nodeModules = path.join(nodeRoot, 'node_modules')
+  const probe = spawnSync(nodePath, ['-e', getPlaywrightLaunchProbeScript()], {
+    cwd: nodeRoot,
+    stdio: 'pipe',
+    windowsHide: true,
+    timeout: 45000,
+    env: {
+      ...process.env,
+      NODE_PATH: nodeModules,
+      PLAYWRIGHT_BROWSERS_PATH: browsersRoot,
+      SKILLS_MCP_PLAYWRIGHT_BROWSERS: browsersRoot,
+      PLAYWRIGHT_PROBE_EXECUTABLE_PATH: chromiumExecutable,
+    },
+  })
+
+  if (probe.error || probe.status !== 0) {
+    const stderr = (probe.stderr || '').toString().trim()
+    const stdout = (probe.stdout || '').toString().trim()
+    fail(
+      `Bundled Playwright launch probe failed.\nnode: ${nodePath}\nbrowsers: ${browsersRoot}\nchromium: ${chromiumExecutable}\nmcp: ${mcpCliPath}\nstdout: ${stdout}\nstderr: ${stderr}`,
+    )
+  }
+}
+
 verifyBundledPythonLayout()
 verifyRuntimeFiles()
 verifyBundledNodeSkillDependencies()
 verifyBundledPythonDependencies()
 verifyBundledTools()
 verifyMcpLocalEntrypoints()
-console.log('[verify:runtimes] OK: bundled Python/Node/tools, skill JS dependencies, and MCP local entrypoints are present.')
+verifyBundledPlaywrightLaunchProbe()
+console.log('[verify:runtimes] OK: bundled Python/Node/tools, skill JS dependencies, MCP local entrypoints, and Playwright launch probe are present.')
 
 

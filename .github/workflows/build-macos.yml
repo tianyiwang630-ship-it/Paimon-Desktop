@@ -1,0 +1,256 @@
+﻿name: Build macOS Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x64
+          - runner: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      CI: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve app directory
+        shell: bash
+        run: |
+          if [ -d "skills-mcp-beta/frontend" ]; then
+            echo "APP_DIR=skills-mcp-beta" >> "$GITHUB_ENV"
+          else
+            echo "APP_DIR=." >> "$GITHUB_ENV"
+          fi
+
+      - name: Show build context
+        shell: bash
+        run: |
+          cd "${APP_DIR}"
+          echo "APP_DIR=${APP_DIR}"
+          pwd
+          ls -la
+          ls -la frontend || true
+          ls -la mcp-servers || true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: "npm"
+          cache-dependency-path: |
+            **/frontend/package-lock.json
+            **/mcp-servers/open-websearch/package-lock.json
+            **/mcp-servers/playwright/package-lock.json
+            **/mcp-servers/rednote/package-lock.json
+
+      - name: Resolve expected release tag from package version
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend"
+          APP_VERSION="$(node -p "require('./package.json').version")"
+          if [ -z "${APP_VERSION}" ]; then
+            echo "Failed to read frontend/package.json version"
+            exit 1
+          fi
+          EXPECTED_TAG="v${APP_VERSION}"
+          echo "APP_VERSION=${APP_VERSION}" >> "$GITHUB_ENV"
+          echo "EXPECTED_TAG=${EXPECTED_TAG}" >> "$GITHUB_ENV"
+          echo "Expected release tag: ${EXPECTED_TAG}"
+
+      - name: Validate pushed tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          REF_TAG="${GITHUB_REF_NAME}"
+          if [ "${REF_TAG}" != "${EXPECTED_TAG}" ]; then
+            echo "Tag/version mismatch: pushed tag=${REF_TAG}, expected=${EXPECTED_TAG}"
+            exit 1
+          fi
+
+      - name: Ensure expected release tag exists for workflow_dispatch
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          REMOTE_LINE="$(git ls-remote --tags origin "refs/tags/${EXPECTED_TAG}" | tail -n1 || true)"
+          if [ -n "${REMOTE_LINE}" ]; then
+            REMOTE_SHA="$(echo "${REMOTE_LINE}" | awk '{print $1}')"
+            if [ "${REMOTE_SHA}" != "${GITHUB_SHA}" ]; then
+              echo "Tag ${EXPECTED_TAG} already exists on ${REMOTE_SHA}, current commit is ${GITHUB_SHA}. Refusing to move tag."
+              exit 1
+            fi
+            echo "Tag ${EXPECTED_TAG} already exists on current commit."
+          else
+            git tag "${EXPECTED_TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${EXPECTED_TAG}"
+            echo "Created tag ${EXPECTED_TAG} at ${GITHUB_SHA}."
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MCP Node dependencies
+        shell: bash
+        run: |
+          cd "${APP_DIR}"
+          install_node_deps() {
+            local dir="$1"
+            if [ ! -d "$dir" ] || [ ! -f "$dir/package.json" ]; then
+              echo "Skip $dir (missing package.json)"
+              return 0
+            fi
+            echo "Installing deps for $dir"
+            if [ -f "$dir/package-lock.json" ]; then
+              npm ci --prefix "$dir"
+            else
+              npm install --prefix "$dir" --no-audit --no-fund
+            fi
+          }
+
+          install_node_deps "mcp-servers/open-websearch"
+          install_node_deps "mcp-servers/playwright"
+          install_node_deps "mcp-servers/rednote"
+
+          rm -rf mcp-servers/open-websearch/node_modules/npx || true
+
+          if [ -d "mcp-servers/rednote" ] && [ -f "mcp-servers/rednote/package.json" ]; then
+            npm run --prefix mcp-servers/rednote build --if-present
+            npm prune --prefix mcp-servers/rednote --omit dev
+          fi
+
+      - name: Prepare runtime core bundle inputs (python/node/playwright)
+        shell: bash
+        run: |
+          cd "${APP_DIR}"
+          rm -rf runtime/python runtime/node runtime/playwright-browsers runtime/tools
+          mkdir -p runtime/node/bin runtime/playwright-browsers runtime/python
+
+          if [ -z "${pythonLocation:-}" ] || [ ! -x "${pythonLocation}/bin/python3" ]; then
+            echo "setup-python did not provide a usable pythonLocation"
+            exit 1
+          fi
+
+          cp -R "${pythonLocation}/." runtime/python/
+          runtime/python/bin/python3 -m pip install --upgrade pip setuptools wheel
+          runtime/python/bin/python3 -m pip install -r requirements-runtime.txt
+          find runtime/python -type d \( -name "__pycache__" -o -name ".pytest_cache" \) -prune -exec rm -rf {} +
+          find runtime/python -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+
+          NODE_BIN="$(command -v node)"
+          cp "${NODE_BIN}" runtime/node/bin/node
+          chmod +x runtime/node/bin/node
+
+          PW_VERSION="$(node -p "try{require('./mcp-servers/playwright/node_modules/playwright/package.json').version}catch(e){''}")"
+          REDNOTE_PW_VERSION="$(node -p "try{require('./mcp-servers/rednote/node_modules/playwright/package.json').version}catch(e){''}")"
+
+          if [ -x "./mcp-servers/playwright/node_modules/.bin/playwright" ]; then
+            PLAYWRIGHT_BROWSERS_PATH="$PWD/runtime/playwright-browsers" \
+              ./mcp-servers/playwright/node_modules/.bin/playwright install chromium --no-shell
+          else
+            echo "Playwright CLI not found under mcp-servers/playwright"
+            exit 1
+          fi
+
+          if [ -x "./mcp-servers/rednote/node_modules/.bin/playwright" ] && [ "${PW_VERSION}" != "${REDNOTE_PW_VERSION}" ]; then
+            PLAYWRIGHT_BROWSERS_PATH="$PWD/runtime/playwright-browsers" \
+              ./mcp-servers/rednote/node_modules/.bin/playwright install chromium --no-shell
+          fi
+
+          rm -rf runtime/playwright-browsers/mcp-chrome runtime/playwright-browsers/.links
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend"
+          if [ -f "package-lock.json" ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Build runtime bundles and manifest (${{ matrix.arch }})
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend"
+          mkdir -p release/runtime-assets
+          npm run build:runtime-bundles -- \
+            --runtime-root ../runtime \
+            --out-dir ./release/runtime-assets \
+            --app-version "${APP_VERSION}" \
+            --platform darwin \
+            --arch "${{ matrix.arch }}"
+
+      - name: Build macOS app artifacts (${{ matrix.arch }})
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend"
+          npm run build
+          npx electron-builder \
+            --mac \
+            --${{ matrix.arch }} \
+            --publish never \
+            --config.extraMetadata.runtimeBootstrap.githubRepo="${{ github.repository }}" \
+            --config.extraMetadata.runtimeBootstrap.releaseTagPrefix="v" \
+            --config.extraMetadata.runtimeBootstrap.manifestNameTemplate="runtime-manifest-darwin-${{ matrix.arch }}.json" \
+            --config.extraMetadata.runtimeBootstrap.installOptionalPackages=false
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend/release"
+          files=()
+          for p in *.dmg *.zip runtime-assets/*.tar.gz runtime-assets/*.json runtime-assets/*.sha256; do
+            [ -e "$p" ] && files+=("$p")
+          done
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No artifacts found in release/"
+            exit 1
+          fi
+          CHECKSUM_FILE="checksums-darwin-${{ matrix.arch }}.sha256"
+          shasum -a 256 "${files[@]}" > "${CHECKSUM_FILE}"
+
+      - name: Upload macOS artifacts (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: paimon-macos-${{ matrix.arch }}
+          path: |
+            **/frontend/release/*.dmg
+            **/frontend/release/*.zip
+            **/frontend/release/*.blockmap
+            **/frontend/release/latest-mac.yml
+            **/frontend/release/checksums-darwin-${{ matrix.arch }}.sha256
+            **/frontend/release/runtime-assets/*.tar.gz
+            **/frontend/release/runtime-assets/*.json
+            **/frontend/release/runtime-assets/*.sha256
+          if-no-files-found: error
+
+      - name: Publish release assets (${{ matrix.arch }})
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.EXPECTED_TAG }}
+          files: |
+            **/frontend/release/*.dmg
+            **/frontend/release/*.zip
+            **/frontend/release/checksums-darwin-${{ matrix.arch }}.sha256
+            **/frontend/release/runtime-assets/*.tar.gz
+            **/frontend/release/runtime-assets/*.json
+            **/frontend/release/runtime-assets/*.sha256
+          fail_on_unmatched_files: true

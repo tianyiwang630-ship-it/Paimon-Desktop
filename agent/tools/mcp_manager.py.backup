@@ -1,0 +1,259 @@
+"""
+MCP Manager - 使用 mcp-use 管理 MCP servers
+"""
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Dict, List, Any
+
+try:
+    from mcp_use import MCPClient
+    MCP_USE_AVAILABLE = True
+except ImportError:
+    MCP_USE_AVAILABLE = False
+    print("⚠️  mcp-use 未安装，请运行: pip install mcp-use")
+
+from agent.discovery.mcp_scanner import MCPScanner
+
+
+class MCPManager:
+    """MCP 工具管理器 - 自动发现、连接和管理 MCP servers"""
+
+    def __init__(self, servers_dir: str = "mcp-servers", auto_discover: bool = True):
+        """
+        初始化 MCP Manager
+
+        Args:
+            servers_dir: MCP servers 目录路径
+            auto_discover: 是否自动发现并连接 servers
+        """
+        if not MCP_USE_AVAILABLE:
+            raise ImportError("mcp-use 库未安装")
+
+        self.servers_dir = servers_dir
+        self.scanner = MCPScanner(servers_dir)
+        self.client = MCPClient()
+        self.servers = {}  # 存储 server 状态
+
+        if auto_discover:
+            self.discover_and_connect()
+
+    def discover_and_connect(self):
+        """自动发现并连接所有 MCP servers"""
+        print("\n🔍 扫描 MCP servers...")
+
+        # 扫描目录
+        discovered = self.scanner.scan()
+
+        if not discovered:
+            print("⚠️  未发现任何 MCP servers")
+            print(f"💡 提示：将 MCP server 项目克隆到 {self.servers_dir}/ 目录")
+            return
+
+        # 保存配置
+        self.scanner.save_config(discovered)
+
+        # 连接每个 server
+        print("\n🔌 连接 MCP servers...")
+        for server_name, config in discovered.items():
+            self._connect_server(server_name, config)
+
+        # 统计
+        connected = len([s for s in self.servers.values() if s['status'] == 'connected'])
+        print(f"\n✅ 成功连接 {connected}/{len(discovered)} 个 servers")
+
+    def _connect_server(self, server_name: str, config: Dict[str, Any]):
+        """连接单个 MCP server"""
+        try:
+            # 根据类型构建 mcp-use 配置
+            server_type = config.get('type', 'stdio')
+
+            if server_type == 'http':
+                # HTTP MCP server
+                mcp_config = {
+                    'url': config['url']
+                }
+                if config.get('headers'):
+                    mcp_config['headers'] = config['headers']
+            else:
+                # stdio MCP server
+                mcp_config = {
+                    'command': config['command'],
+                    'args': config.get('args', []),
+                }
+                if config.get('env'):
+                    mcp_config['env'] = config['env']
+
+            # 添加 server
+            self.client.add_server(server_name, mcp_config)
+
+            # 创建 session (异步操作，需要同步包装)
+            asyncio.run(self.client.create_session(server_name))
+
+            self.servers[server_name] = {
+                'config': config,
+                'status': 'connected',
+                'tools': []  # 稍后填充
+            }
+
+            print(f"  ✅ {server_name} ({server_type})")
+
+        except Exception as e:
+            self.servers[server_name] = {
+                'config': config,
+                'status': 'failed',
+                'error': str(e)
+            }
+            print(f"  ❌ {server_name}: {e}")
+
+    def get_all_tools(self) -> List[Dict[str, Any]]:
+        """
+        获取所有 MCP 工具（OpenAI function calling 格式）
+
+        Returns:
+            工具列表，格式符合 OpenAI API 要求
+        """
+        try:
+            # mcp-use 1.6.0 使用异步 API
+            async def _get_tools():
+                result = await self.client.search_tools('', detail_level='full')
+                return result
+
+            search_result = asyncio.run(_get_tools())
+
+            # 转换为 OpenAI function calling 格式
+            tools = []
+            for tool_info in search_result.get('results', []):
+                server = tool_info.get('server', '')
+                tool_name = f"mcp__{server}__{tool_info['name']}"
+
+                tool_def = {
+                    'type': 'function',
+                    'function': {
+                        'name': tool_name,
+                        'description': tool_info.get('description', ''),
+                        'parameters': tool_info.get('inputSchema', {
+                            'type': 'object',
+                            'properties': {}
+                        })
+                    }
+                }
+                tools.append(tool_def)
+
+            print(f"\n📦 可用工具数: {len(tools)}")
+            return tools
+        except Exception as e:
+            print(f"❌ 获取工具失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """
+        调用 MCP 工具
+
+        Args:
+            tool_name: 工具名称，格式: mcp__<server>__<tool_name>
+            arguments: 工具参数
+
+        Returns:
+            工具执行结果
+        """
+        try:
+            # 解析工具名称: mcp__<server>__<tool_name>
+            if not tool_name.startswith('mcp__'):
+                return {'error': f'Invalid MCP tool name: {tool_name}'}
+
+            parts = tool_name.split('__')
+            if len(parts) < 3:
+                return {'error': f'Invalid MCP tool name format: {tool_name}'}
+
+            server_name = parts[1]
+            actual_tool_name = '__'.join(parts[2:])  # 处理工具名中可能包含的__
+
+            # 异步调用工具
+            async def _call_tool():
+                session = self.client.get_session(server_name)
+                if not session:
+                    raise Exception(f"Session not found for server: {server_name}")
+                result = await session.call_tool(actual_tool_name, arguments)
+                return result
+
+            result = asyncio.run(_call_tool())
+
+            # 提取结果内容
+            if hasattr(result, 'content'):
+                # 返回文本内容
+                content_parts = []
+                for item in result.content:
+                    if hasattr(item, 'text'):
+                        content_parts.append(item.text)
+                return '\n'.join(content_parts) if content_parts else str(result)
+            else:
+                return str(result)
+
+        except Exception as e:
+            import traceback
+            return {
+                'error': str(e),
+                'tool': tool_name,
+                'arguments': arguments,
+                'traceback': traceback.format_exc()
+            }
+
+    def get_server_status(self) -> Dict[str, Any]:
+        """获取所有 server 的状态"""
+        return {
+            'total': len(self.servers),
+            'connected': len([s for s in self.servers.values() if s['status'] == 'connected']),
+            'failed': len([s for s in self.servers.values() if s['status'] == 'failed']),
+            'servers': self.servers
+        }
+
+    def reload(self):
+        """重新扫描和连接（热重载）"""
+        print("\n🔄 重新加载 MCP servers...")
+
+        # 关闭现有连接
+        try:
+            self.client.close_all()
+        except:
+            pass
+
+        # 重新初始化
+        self.client = MCPClient()
+        self.servers = {}
+
+        # 重新发现和连接
+        self.discover_and_connect()
+
+    def close_all(self):
+        """关闭所有连接"""
+        try:
+            asyncio.run(self.client.close_all_sessions())
+            print("✅ 所有 MCP 连接已关闭")
+        except Exception as e:
+            print(f"⚠️  关闭连接时出错: {e}")
+
+
+# 使用示例
+if __name__ == "__main__":
+    # 创建管理器（自动发现并连接）
+    manager = MCPManager()
+
+    # 查看状态
+    status = manager.get_server_status()
+    print(f"\n📊 状态统计:")
+    print(f"  总数: {status['total']}")
+    print(f"  已连接: {status['connected']}")
+    print(f"  失败: {status['failed']}")
+
+    # 获取工具列表
+    tools = manager.get_all_tools()
+    if tools:
+        print(f"\n🔧 可用工具:")
+        for tool in tools[:5]:  # 只显示前5个
+            print(f"  - {tool['function']['name']}: {tool['function']['description']}")
+        if len(tools) > 5:
+            print(f"  ... 还有 {len(tools) - 5} 个工具")

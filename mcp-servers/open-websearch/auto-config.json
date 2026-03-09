@@ -1,0 +1,16 @@
+{
+  "_comment": " MCP Scanner ",
+  "name": "open-websearch",
+  "type": "stdio",
+  "command": "node",
+  "args": [
+    "node_modules/open-websearch/build/index.js"
+  ],
+  "env": {
+    "DEFAULT_SEARCH_ENGINE": "duckduckgo",
+    "MODE": "stdio"
+  },
+  "cwd": "D:\\files\\demo\\desk project-Paimon\\paimon-desk-assistant\\mcp-servers\\open-websearch",
+  "description": "Multi-engine web search (Bing, DuckDuckGo, Exa, Brave, Baidu, etc.)",
+  "source": "custom"
+}

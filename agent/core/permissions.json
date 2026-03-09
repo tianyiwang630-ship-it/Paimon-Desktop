@@ -1,0 +1,76 @@
+{
+  "version": "1.0",
+  "mode": "ask",
+
+  "permissions": {
+    "deny": [
+      "bash:rm -rf /*",
+      "bash:rm -rf *",
+      "bash:sudo *",
+      "bash:format*",
+      "bash:dd *",
+      "bash:mkfs*",
+      "bash:chmod 777 *",
+      "read:.env",
+      "read:.env.*",
+      "read:**/secrets/**",
+      "read:**/.ssh/**",
+      "read:.ssh/**",
+      "read:**/.aws/**",
+      "write:/etc/**",
+      "write:/bin/**",
+      "write:/usr/**"
+    ],
+
+    "allow": [
+      "read:**",
+      "glob:**",
+      "grep:**"
+    ],
+
+    "ask": [
+      "write:**",
+      "edit:**",
+      "bash:git push*",
+      "bash:git commit*",
+      "bash:npm install*",
+      "bash:pip install*",
+      "bash:rm *",
+      "bash:mv *",
+      "bash:cp *",
+      "bash:mkdir*",
+      "bash:touch*"
+    ]
+  },
+
+  "risk_levels": {
+    "read": "low",
+    "glob": "low",
+    "grep": "low",
+    "write": "medium",
+    "edit": "medium",
+    "bash": "auto"
+  },
+
+  "bash_risk_keywords": {
+    "high": ["rm -rf", "sudo", "dd", "mkfs", "format", "chmod 777"],
+    "medium": ["git push", "git commit", "npm install", "pip install", "chmod", "chown", "rm", "mv"],
+    "low": ["git status", "git diff", "git log", "ls", "pwd", "echo", "cat", "grep", "find"]
+  },
+
+  "bash_modify_keywords": [
+    "git push",
+    "git commit",
+    "npm install",
+    "pip install",
+    "yarn add",
+    "rm ",
+    "mv ",
+    "cp ",
+    "mkdir",
+    "touch",
+    ">",
+    ">>",
+    "tee"
+  ]
+}

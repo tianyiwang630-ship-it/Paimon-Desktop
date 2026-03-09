@@ -1,0 +1,15 @@
+{
+  "_comment": " MCP Scanner ",
+  "name": "playwright",
+  "type": "stdio",
+  "command": "node",
+  "args": [
+    "node_modules/@playwright/mcp/cli.js"
+  ],
+  "env": {
+    "PLAYWRIGHT_MCP_BROWSER": "chromium"
+  },
+  "cwd": "D:\\files\\demo\\desk project-Paimon\\paimon-desk-assistant\\mcp-servers\\playwright",
+  "description": "Playwright browser automation",
+  "source": "custom"
+}

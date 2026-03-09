@@ -85,27 +85,6 @@
       "signAndEditExecutable": false,
       "extraResources": [
         {
-          "from": "../agent",
-          "to": "agent"
-        },
-        {
-          "from": "../skills",
-          "to": "skills"
-        },
-        {
-          "from": "../mcp-servers",
-          "to": "mcp-servers",
-          "filter": [
-            "**/*",
-            "!open-websearch/node_modules/npx",
-            "!open-websearch/node_modules/npx/**"
-          ]
-        },
-        {
-          "from": "../requirements.txt",
-          "to": "requirements.txt"
-        },
-        {
           "from": "../runtime/python",
           "to": "python"
         },
@@ -136,27 +115,6 @@
       ],
       "icon": "build/icon.icns",
       "extraResources": [
-        {
-          "from": "../agent",
-          "to": "agent"
-        },
-        {
-          "from": "../skills",
-          "to": "skills"
-        },
-        {
-          "from": "../mcp-servers",
-          "to": "mcp-servers",
-          "filter": [
-            "**/*",
-            "!open-websearch/node_modules/npx",
-            "!open-websearch/node_modules/npx/**"
-          ]
-        },
-        {
-          "from": "../requirements.txt",
-          "to": "requirements.txt"
-        },
         {
           "from": "../runtime/python",
           "to": "python"

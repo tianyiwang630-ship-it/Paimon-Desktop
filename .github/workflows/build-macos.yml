@@ -139,7 +139,6 @@ jobs:
       - name: Install frontend dependencies
         shell: bash
         run: |
-          cd "${APP_DIR}"
           cd "${APP_DIR}/frontend"
           if [ -f "package-lock.json" ]; then
             npm ci

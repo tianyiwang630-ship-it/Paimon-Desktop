@@ -112,6 +112,36 @@ class ChatResponse(BaseModel):
     tool_calls_count: int = 0
 
 
+class ChatStartResponse(BaseModel):
+    request_id: str
+    session_id: str
+
+
+class PermissionRequiredPayload(BaseModel):
+    code: Literal["permission_required"] = "permission_required"
+    session_id: str
+    tool: str
+    args: Dict[str, Any]
+    tool_call_id: Optional[str] = None
+    message: str
+
+
+ChatRunStatus = Literal["running", "success", "error", "permission_required", "interrupted"]
+
+
+class ChatStatusResponse(BaseModel):
+    request_id: str
+    session_id: str
+    status: ChatRunStatus
+    response: Optional[str] = None
+    tool_calls_count: int = 0
+    permission_detail: Optional[PermissionRequiredPayload] = None
+    error: Optional[str] = None
+    created_at: str
+    updated_at: str
+    elapsed_ms: Optional[int] = None
+
+
 class ChatInterruptRequest(BaseModel):
     session_id: str
 

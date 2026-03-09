@@ -78,6 +78,53 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function isPathWithinRoot(candidatePath: string, allowedRoot: string, caseInsensitive = false): boolean {
+  const normalizedCandidate = caseInsensitive ? candidatePath.toLowerCase() : candidatePath
+  const normalizedRoot = caseInsensitive ? allowedRoot.toLowerCase() : allowedRoot
+  const allowedPrefix = `${normalizedRoot}${path.sep}`
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(allowedPrefix)
+}
+
+function resolveWindowsAbsoluteOverride(rawValue: string): string | null {
+  const raw = (rawValue || '').trim()
+  if (!raw) return null
+  if (raw.startsWith('\\\\')) {
+    return null
+  }
+
+  const normalized = path.win32.normalize(raw)
+  if (!path.win32.isAbsolute(normalized)) {
+    return null
+  }
+
+  const parsed = path.win32.parse(normalized)
+  if (parsed.root.toUpperCase() !== 'D:\\') {
+    return null
+  }
+
+  return path.resolve(normalized)
+}
+
+function expandMacHome(rawValue: string): string {
+  const raw = (rawValue || '').trim()
+  if (!raw) return raw
+  const homeDir = app.getPath('home')
+  if (raw === '~') return homeDir
+  if (raw.startsWith(`~${path.sep}`)) {
+    return path.join(homeDir, raw.slice(2))
+  }
+  if (raw.startsWith('~/') || raw.startsWith('~\\')) {
+    return path.join(homeDir, raw.slice(2))
+  }
+  return raw
+}
+
+function resolveMacAbsoluteOverride(rawValue: string): string | null {
+  const raw = (rawValue || '').trim()
+  if (!raw) return null
+  return path.resolve(expandMacHome(raw))
+}
+
 function getBackendStartupLogPath(): string {
   if (backendStartupLogPath) {
     return backendStartupLogPath
@@ -171,11 +218,10 @@ function isExpectedBackendHealth(
 
 function resolveWindowsDataRoot(): string {
   const override = (process.env.SKILLS_MCP_DATA_ROOT || '').trim()
-  const candidate = override || WINDOWS_DATA_ROOT
-  const normalized = path.resolve(candidate)
+  const normalized = override ? resolveWindowsAbsoluteOverride(override) : WINDOWS_DATA_ROOT
 
-  if (/^[A-Za-z]:/.test(normalized) && normalized.slice(0, 2).toUpperCase() !== 'D:') {
-    console.warn(`[Windows Data Root] Reject non-D drive path override: ${candidate}`)
+  if (!normalized) {
+    console.warn(`[Windows Data Root] Reject override outside D drive: ${override}`)
     ensureDir(WINDOWS_DATA_ROOT)
     return WINDOWS_DATA_ROOT
   }
@@ -186,13 +232,11 @@ function resolveWindowsDataRoot(): string {
 
 function resolveMacDataRoot(): string {
   const override = (process.env.SKILLS_MCP_DATA_ROOT || '').trim()
-  const candidate = override || MACOS_DATA_ROOT
-  const normalized = path.resolve(candidate)
+  const normalized = override ? resolveMacAbsoluteOverride(override) : MACOS_DATA_ROOT
   const allowedRoot = path.resolve(MACOS_DATA_ROOT)
-  const allowedPrefix = `${allowedRoot}${path.sep}`
 
-  if (normalized !== allowedRoot && !normalized.startsWith(allowedPrefix)) {
-    console.warn(`[macOS Data Root] Reject override outside ~/PaimonData: ${candidate}`)
+  if (!normalized || !isPathWithinRoot(normalized, allowedRoot)) {
+    console.warn(`[macOS Data Root] Reject override outside ~/PaimonData: ${override}`)
     ensureDir(allowedRoot)
     return allowedRoot
   }
@@ -672,12 +716,8 @@ function resolveRuntimeRoot(): string {
     const dataRoot = resolveWindowsDataRoot()
 
     if (override) {
-      const normalizedOverride = path.resolve(override)
-      const dataRootLower = dataRoot.toLowerCase()
-      const normalizedLower = normalizedOverride.toLowerCase()
-      const allowedPrefix = `${dataRootLower}${path.sep}`
-
-      if (normalizedLower === dataRootLower || normalizedLower.startsWith(allowedPrefix)) {
+      const normalizedOverride = resolveWindowsAbsoluteOverride(override)
+      if (normalizedOverride && isPathWithinRoot(normalizedOverride, dataRoot, true)) {
         ensureDir(normalizedOverride)
         return normalizedOverride
       }
@@ -694,10 +734,8 @@ function resolveRuntimeRoot(): string {
     const dataRoot = resolveMacDataRoot()
 
     if (override) {
-      const normalizedOverride = path.resolve(override)
-      const allowedPrefix = `${dataRoot}${path.sep}`
-
-      if (normalizedOverride === dataRoot || normalizedOverride.startsWith(allowedPrefix)) {
+      const normalizedOverride = resolveMacAbsoluteOverride(override)
+      if (normalizedOverride && isPathWithinRoot(normalizedOverride, dataRoot)) {
         ensureDir(normalizedOverride)
         return normalizedOverride
       }

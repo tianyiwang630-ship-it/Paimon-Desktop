@@ -101,6 +101,7 @@ def cleanup_old_logs(log_dir: Path, retention_days: int = LOG_RETENTION_DAYS):
 from agent.core.database import Database
 from agent.core.paths import get_asset_root, get_runtime_root
 from agent.server.agent_manager import AgentManager
+from agent.server.chat_tasks import ChatTaskManager
 from agent.server.routes import sessions, chat, settings, files, projects, permissions, meta
 
 runtime_root = get_runtime_root()
@@ -168,7 +169,9 @@ async def lifespan(app: FastAPI):
         mcp_manager=mcp_manager,
         permission_mode="auto",
     )
+    chat_task_manager = ChatTaskManager(agent_manager=agent_manager)
     app.state.agent_manager = agent_manager
+    app.state.chat_task_manager = chat_task_manager
     app.state.mcp_manager = mcp_manager
     logger.info("AgentManager ")
     logger.info(f" {BACKEND_ORIGIN}")
@@ -180,6 +183,7 @@ async def lifespan(app: FastAPI):
     logger.info("...")
     log_cleanup_stop.set()
     log_cleanup_thread.join(timeout=2)
+    chat_task_manager.close()
     agent_manager.close_all()
     if mcp_manager:
         try:

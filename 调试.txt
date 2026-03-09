@@ -55,7 +55,7 @@ git commit -m "Initial source-only snapshot"
 git remote add origin https://github.com/你的用户名/你的仓库名.git
 
 git push origin <你的分支>
-git tag v1.0.1
+git tag v1.0.1##要更改package.json
 git push origin v1.0.1
 
 ======要覆盖远程仓库

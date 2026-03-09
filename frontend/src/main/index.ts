@@ -1,14 +1,27 @@
 ﻿import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from 'electron'
 import path from 'path'
+import { shell } from 'electron'
 import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync } from 'fs'
+import { createServer } from 'net'
 import { spawn, spawnSync, ChildProcess } from 'child_process'
-import { bootstrapManagedRuntimeForMac } from './runtimeBootstrap'
+import {
+  BACKEND_APP_ID,
+  BACKEND_APP_ID_ENV_VAR,
+  BACKEND_APP_VERSION_ENV_VAR,
+  BACKEND_HOST_ENV_VAR,
+  BACKEND_PORT_ENV_VAR,
+  DEFAULT_BACKEND_HOST,
+  DEFAULT_BACKEND_PORT,
+  buildBackendRuntimeUrls,
+} from '../shared/backendConfig'
+import type { AppRuntimeStatus, AppStartupState } from '../shared/appRuntime'
 
 let mainWindow: BrowserWindow | null = null
 let pythonProcess: ChildProcess | null = null
 let isAppQuitting = false
+let backendStartupState: AppStartupState = 'starting'
+let backendStartupFailureReason: string | null = null
 
-const API_HEALTH_URL = 'http://127.0.0.1:8000/api/health'
 const BACKEND_READY_TIMEOUT_MS = 30_000
 const BACKEND_POLL_INTERVAL_MS = 500
 const WINDOWS_DATA_ROOT = path.join('D:\\', 'PaimonData')
@@ -21,6 +34,30 @@ const INTERCEPT_ERROR_CODES = new Set(['EPERM', 'EACCES', 'UNKNOWN'])
 let backendStartupLogPath: string | null = null
 
 type BackendLaunchChannel = 'direct' | 'cmd-wrapper'
+
+interface BackendRuntimeInfo {
+  host: string
+  port: number
+  origin: string
+  apiBaseUrl: string
+  healthUrl: string
+  appId: string
+  appVersion: string
+}
+
+interface BackendHealthPayload {
+  status?: string
+  app_id?: string
+  app_version?: string
+}
+
+let backendRuntimeInfo: BackendRuntimeInfo = {
+  host: DEFAULT_BACKEND_HOST,
+  port: DEFAULT_BACKEND_PORT,
+  ...buildBackendRuntimeUrls(DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT),
+  appId: BACKEND_APP_ID,
+  appVersion: 'unknown',
+}
 
 function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true })
@@ -64,6 +101,71 @@ function logBackendStartup(level: 'info' | 'warn' | 'error', message: string): v
   } catch (error) {
     console.error(`[Backend Startup Log] Failed to write log file: ${String(error)}`)
   }
+}
+
+function setBackendStartupStatus(state: AppStartupState, reason: string | null = null): void {
+  backendStartupState = state
+  backendStartupFailureReason = reason
+}
+
+function createBackendRuntimeInfo(host: string, port: number): BackendRuntimeInfo {
+  return {
+    host,
+    port,
+    ...buildBackendRuntimeUrls(host, port),
+    appId: BACKEND_APP_ID,
+    appVersion: app.getVersion(),
+  }
+}
+
+function getRuntimeStatusSnapshot(): AppRuntimeStatus {
+  return {
+    backendOrigin: backendRuntimeInfo.origin,
+    backendApiBaseUrl: backendRuntimeInfo.apiBaseUrl,
+    backendHealthUrl: backendRuntimeInfo.healthUrl,
+    startupState: backendStartupState,
+    startupFailureReason: backendStartupFailureReason,
+    logPath: getBackendStartupLogPath(),
+  }
+}
+
+function reserveLoopbackPort(host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.unref()
+    server.on('error', reject)
+    server.listen(0, host, () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('Failed to reserve backend port.')))
+        return
+      }
+      const port = address.port
+      server.close((error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve(port)
+      })
+    })
+  })
+}
+
+async function allocateBackendRuntimeInfo(host: string): Promise<BackendRuntimeInfo> {
+  const port = await reserveLoopbackPort(host)
+  return createBackendRuntimeInfo(host, port)
+}
+
+function isExpectedBackendHealth(
+  payload: BackendHealthPayload,
+  runtimeInfo: BackendRuntimeInfo,
+): boolean {
+  return (
+    payload.status === 'ok' &&
+    payload.app_id === runtimeInfo.appId &&
+    payload.app_version === runtimeInfo.appVersion
+  )
 }
 
 function resolveWindowsDataRoot(): string {
@@ -169,6 +271,29 @@ function getBundledNodePath(): string {
 
 function getBundledPlaywrightBrowsersPath(): string {
   return path.join(process.resourcesPath, 'playwright-browsers')
+}
+
+function getBundledToolsPathEntries(): string[] {
+  const toolsRoot = path.join(process.resourcesPath, 'tools')
+  if (!existsSync(toolsRoot)) return []
+
+  const entries: string[] = []
+  for (const entry of readdirSync(toolsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const payloadRoot = path.join(toolsRoot, entry.name, 'payload')
+    const candidates = [
+      path.join(payloadRoot, 'bin'),
+      path.join(payloadRoot, 'Contents', 'MacOS'),
+      path.join(payloadRoot, 'LibreOffice.app', 'Contents', 'MacOS'),
+    ]
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        entries.push(candidate)
+      }
+    }
+  }
+
+  return Array.from(new Set(entries))
 }
 
 function getWindowsPlaywrightBrowsersPath(): string | null {
@@ -405,6 +530,7 @@ function getBundledPythonPathEntries(pythonExe: string): string[] {
 function buildBackendEnv(
   selectedPython: PythonCandidate,
   runtimeRoot: string,
+  runtimeInfo: BackendRuntimeInfo,
   bundledNodePath: string | null,
   playwrightBrowsersPath: string | null,
   bundledToolsPathEntries: string[],
@@ -414,6 +540,10 @@ function buildBackendEnv(
     PYTHONIOENCODING: 'utf-8',
     SKILLS_MCP_RUNTIME_ROOT: runtimeRoot,
     SKILLS_MCP_PYTHON: selectedPython.command,
+    [BACKEND_HOST_ENV_VAR]: runtimeInfo.host,
+    [BACKEND_PORT_ENV_VAR]: String(runtimeInfo.port),
+    [BACKEND_APP_ID_ENV_VAR]: runtimeInfo.appId,
+    [BACKEND_APP_VERSION_ENV_VAR]: runtimeInfo.appVersion,
     PYTHONNOUSERSITE: '1',
     PIP_USER: '0',
   }
@@ -634,83 +764,65 @@ function spawnBackendProcess(
 }
 
 async function startPythonBackend(): Promise<{ ok: boolean; reason?: string }> {
+  setBackendStartupStatus('starting')
   const scriptPath = getBackendScriptPath()
   const runtimeRoot = resolveRuntimeRoot()
   if (!existsSync(scriptPath)) {
-    return { ok: false, reason: `Backend script not found: ${scriptPath}` }
+    const reason = `Backend script not found: ${scriptPath}`
+    setBackendStartupStatus('failed', reason)
+    return { ok: false, reason }
   }
 
   let bundledNodePath: string | null = null
   let bundledPlaywrightBrowsersPath: string | null = null
   let runtimePlaywrightBrowsersPath: string | null = getWindowsPlaywrightBrowsersPath()
-  let packagedPythonCandidates: string[] | undefined
   let bundledToolsPathEntries: string[] = []
 
   if (app.isPackaged) {
-    if (process.platform === 'darwin') {
-      const bootstrap = await bootstrapManagedRuntimeForMac({ runtimeRoot, log: logBackendStartup })
-      if (!bootstrap.ok) {
-        return {
-          ok: false,
-          reason: bootstrap.reason || 'Managed runtime bootstrap failed on macOS.',
-        }
+    bundledNodePath = getBundledNodePath()
+    if (!existsSync(bundledNodePath)) {
+      const reason = `Bundled Node runtime not found: ${bundledNodePath}. Package runtime/node before building.`
+      setBackendStartupStatus('failed', reason)
+      return {
+        ok: false,
+        reason,
       }
+    }
 
-      packagedPythonCandidates = bootstrap.pythonCandidates
-      bundledNodePath = bootstrap.nodePath
-      runtimePlaywrightBrowsersPath = bootstrap.playwrightBrowsersPath
-      bundledPlaywrightBrowsersPath = bootstrap.playwrightBrowsersPath
-      bundledToolsPathEntries = bootstrap.toolsPathEntries
-
-      if (!bundledNodePath) {
+    bundledPlaywrightBrowsersPath = getBundledPlaywrightBrowsersPath()
+    bundledToolsPathEntries = getBundledToolsPathEntries()
+    if (process.platform !== 'win32') {
+      if (!existsSync(bundledPlaywrightBrowsersPath)) {
+        const reason = `Bundled Playwright browsers not found: ${bundledPlaywrightBrowsersPath}. Package runtime/playwright-browsers before building.`
+        setBackendStartupStatus('failed', reason)
         return {
           ok: false,
-          reason: 'Managed runtime bootstrap completed, but Node runtime is missing.',
+          reason,
         }
       }
-      if (!runtimePlaywrightBrowsersPath) {
-        return {
-          ok: false,
-          reason: 'Managed runtime bootstrap completed, but Playwright runtime is missing.',
-        }
-      }
+      runtimePlaywrightBrowsersPath = bundledPlaywrightBrowsersPath
     } else {
-      bundledNodePath = getBundledNodePath()
-      if (!existsSync(bundledNodePath)) {
-        return {
-          ok: false,
-          reason: `Bundled Node runtime not found: ${bundledNodePath}. Package runtime/node before building.`,
-        }
-      }
-
-      bundledPlaywrightBrowsersPath = getBundledPlaywrightBrowsersPath()
-      if (process.platform !== 'win32') {
-        if (!existsSync(bundledPlaywrightBrowsersPath)) {
-          return {
-            ok: false,
-            reason: `Bundled Playwright browsers not found: ${bundledPlaywrightBrowsersPath}. Package runtime/playwright-browsers before building.`,
-          }
-        }
-        runtimePlaywrightBrowsersPath = bundledPlaywrightBrowsersPath
-      } else {
-        seedPlaywrightBrowsersFromBundled(bundledPlaywrightBrowsersPath, runtimePlaywrightBrowsersPath)
-      }
+      seedPlaywrightBrowsersFromBundled(bundledPlaywrightBrowsersPath, runtimePlaywrightBrowsersPath)
     }
   }
 
-  const candidates = getPythonCandidates(packagedPythonCandidates)
+  const candidates = getPythonCandidates()
   if (candidates.length === 0) {
     if (app.isPackaged) {
-      const expectedPython = packagedPythonCandidates?.[0] || getBundledPythonPath()
+      const expectedPython = getBundledPythonPath()
+      const reason = `Bundled Python runtime not found: ${expectedPython}. Package runtime/python before building.`
+      setBackendStartupStatus('failed', reason)
       return {
         ok: false,
-        reason: `Bundled Python runtime not found: ${expectedPython}. Package runtime/python before building.`,
+        reason,
       }
     }
+    const reason =
+      'No Python runtime candidates found. Set SKILLS_MCP_PYTHON or install Python, then ensure required dependencies are available.'
+    setBackendStartupStatus('failed', reason)
     return {
       ok: false,
-      reason:
-        'No Python runtime candidates found. Set SKILLS_MCP_PYTHON or install Python, then ensure required dependencies are available.',
+      reason,
     }
   }
 
@@ -756,19 +868,37 @@ async function startPythonBackend(): Promise<{ ok: boolean; reason?: string }> {
     )
   }
 
-  const backendEnv = buildBackendEnv(
-    selected,
-    runtimeRoot,
-    bundledNodePath,
-    runtimePlaywrightBrowsersPath,
-    bundledToolsPathEntries,
-  )
   let lastFailure = 'Backend startup did not complete.'
 
   for (let attempt = 1; attempt <= BACKEND_MAX_RETRIES; attempt += 1) {
+    let runtimeInfo: BackendRuntimeInfo
+    try {
+      runtimeInfo = await allocateBackendRuntimeInfo(DEFAULT_BACKEND_HOST)
+    } catch (error) {
+      lastFailure = `Attempt ${attempt}/${BACKEND_MAX_RETRIES} failed to reserve backend port: ${String(error)}`
+      logBackendStartup('error', `[Backend Startup] ${lastFailure}`)
+      if (attempt < BACKEND_MAX_RETRIES) {
+        const delayMs = getRetryDelayMs(attempt)
+        logBackendStartup('info', `[Backend Startup] Retry in ${delayMs}ms`)
+        await sleep(delayMs)
+      }
+      continue
+    }
+    backendRuntimeInfo = runtimeInfo
+    const backendEnv = buildBackendEnv(
+      selected,
+      runtimeRoot,
+      runtimeInfo,
+      bundledNodePath,
+      runtimePlaywrightBrowsersPath,
+      bundledToolsPathEntries,
+    )
     const channel: BackendLaunchChannel =
       process.platform === 'win32' && attempt > 1 ? 'cmd-wrapper' : 'direct'
-    logBackendStartup('info', `[Backend Startup] Attempt ${attempt}/${BACKEND_MAX_RETRIES} channel=${channel}`)
+    logBackendStartup(
+      'info',
+      `[Backend Startup] Attempt ${attempt}/${BACKEND_MAX_RETRIES} channel=${channel} origin=${runtimeInfo.origin}`,
+    )
 
     const launch = spawnBackendProcess(selected, scriptPath, runtimeRoot, backendEnv, channel)
     if (!launch.ok || !launch.state) {
@@ -777,9 +907,10 @@ async function startPythonBackend(): Promise<{ ok: boolean; reason?: string }> {
       }`
       logBackendStartup('error', `[Backend Startup] ${lastFailure}`)
     } else {
-      const ready = await waitForBackendReady(BACKEND_READY_TIMEOUT_MS)
+      const ready = await waitForBackendReady(BACKEND_READY_TIMEOUT_MS, runtimeInfo)
       if (ready) {
         logBackendStartup('info', `[Backend Startup] Backend ready on attempt ${attempt}/${BACKEND_MAX_RETRIES}`)
+        setBackendStartupStatus('ready')
         return { ok: true }
       }
 
@@ -798,13 +929,14 @@ async function startPythonBackend(): Promise<{ ok: boolean; reason?: string }> {
     }
   }
 
+  setBackendStartupStatus('failed', `${lastFailure}. Diagnostics log: ${getBackendStartupLogPath()}`)
   return {
     ok: false,
     reason: `${lastFailure}. Diagnostics log: ${getBackendStartupLogPath()}`,
   }
 }
 
-async function waitForBackendReady(timeoutMs: number): Promise<boolean> {
+async function waitForBackendReady(timeoutMs: number, runtimeInfo: BackendRuntimeInfo): Promise<boolean> {
   const start = Date.now()
 
   while (Date.now() - start < timeoutMs) {
@@ -812,8 +944,13 @@ async function waitForBackendReady(timeoutMs: number): Promise<boolean> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 1500)
     try {
-      const resp = await fetch(API_HEALTH_URL, { signal: controller.signal })
-      if (resp.ok) return true
+      const resp = await fetch(runtimeInfo.healthUrl, { signal: controller.signal })
+      if (resp.ok) {
+        const payload = (await resp.json()) as BackendHealthPayload
+        if (isExpectedBackendHealth(payload, runtimeInfo)) {
+          return true
+        }
+      }
     } catch {
       // keep polling
     } finally {
@@ -913,6 +1050,26 @@ ipcMain.handle('app:request-exit', async () => {
   return true
 })
 
+ipcMain.handle('app:get-runtime-status', async () => getRuntimeStatusSnapshot())
+
+ipcMain.handle('app:retry-backend-start', async () => {
+  stopPythonProcess('renderer retry')
+  const result = await startPythonBackend()
+  if (!result.ok) {
+    logBackendStartup('error', `[Backend Startup] Retry failed: ${result.reason || 'unknown error'}`)
+  }
+  return getRuntimeStatusSnapshot()
+})
+
+ipcMain.handle('app:open-backend-logs', async () => {
+  const logsDir = path.dirname(getBackendStartupLogPath())
+  const error = await shell.openPath(logsDir)
+  if (error) {
+    return { ok: false, error, path: logsDir }
+  }
+  return { ok: true, path: logsDir }
+})
+
 ipcMain.handle('files:pick-folder', async () => {
   const options: OpenDialogOptions = {
     title: 'Select Folder',
@@ -1000,11 +1157,7 @@ ipcMain.handle('files:download', async (_event, payload: { url?: string; filenam
 app.whenReady().then(async () => {
   const startResult = await startPythonBackend()
   if (!startResult.ok) {
-    const logPath = getBackendStartupLogPath()
-    dialog.showErrorBox(
-      'Backend startup failed',
-      `${startResult.reason || 'Unknown error'}\n\nStartup diagnostics log:\n${logPath}`,
-    )
+    logBackendStartup('error', `[Backend Startup] Initial startup failed: ${startResult.reason || 'Unknown error'}`)
   }
 
   createWindow()

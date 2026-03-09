@@ -166,7 +166,7 @@ Runtime sanity checks:
 
 - App launches without backend startup error dialog
 - App logs show Playwright runtime path under `D:\PaimonData\Local\ms-playwright`
-- `http://127.0.0.1:8000/api/health` reachable while app is running
+- Backend health endpoint reachable while app is running
 - Basic chat and File Manager operations work
 
 ## Historical Pitfalls and Fixes

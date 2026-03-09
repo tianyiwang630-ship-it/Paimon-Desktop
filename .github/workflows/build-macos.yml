@@ -140,7 +140,7 @@ jobs:
         shell: bash
         run: |
           cd "${APP_DIR}"
-          rm -rf runtime/python runtime/node runtime/playwright-browsers runtime/tools
+          rm -rf runtime/python runtime/node runtime/playwright-browsers
           mkdir -p runtime/node/bin runtime/playwright-browsers runtime/python
 
           if [ -z "${pythonLocation:-}" ] || [ ! -x "${pythonLocation}/bin/python3" ]; then
@@ -186,18 +186,6 @@ jobs:
             npm install --no-audit --no-fund
           fi
 
-      - name: Build runtime bundles and manifest (${{ matrix.arch }})
-        shell: bash
-        run: |
-          cd "${APP_DIR}/frontend"
-          mkdir -p release/runtime-assets
-          npm run build:runtime-bundles -- \
-            --runtime-root ../runtime \
-            --out-dir ./release/runtime-assets \
-            --app-version "${APP_VERSION}" \
-            --platform darwin \
-            --arch "${{ matrix.arch }}"
-
       - name: Build macOS app artifacts (${{ matrix.arch }})
         shell: bash
         run: |
@@ -206,18 +194,14 @@ jobs:
           npx electron-builder \
             --mac \
             --${{ matrix.arch }} \
-            --publish never \
-            --config.extraMetadata.runtimeBootstrap.githubRepo="${{ github.repository }}" \
-            --config.extraMetadata.runtimeBootstrap.releaseTagPrefix="v" \
-            --config.extraMetadata.runtimeBootstrap.manifestNameTemplate="runtime-manifest-darwin-${{ matrix.arch }}.json" \
-            --config.extraMetadata.runtimeBootstrap.installOptionalPackages=false
+            --publish never
 
       - name: Generate checksums
         shell: bash
         run: |
           cd "${APP_DIR}/frontend/release"
           files=()
-          for p in *.dmg *.zip runtime-assets/*.tar.gz runtime-assets/*.json runtime-assets/*.sha256; do
+          for p in *.dmg; do
             [ -e "$p" ] && files+=("$p")
           done
           if [ ${#files[@]} -eq 0 ]; then
@@ -233,13 +217,7 @@ jobs:
           name: paimon-macos-${{ matrix.arch }}
           path: |
             **/frontend/release/*.dmg
-            **/frontend/release/*.zip
-            **/frontend/release/*.blockmap
-            **/frontend/release/latest-mac.yml
             **/frontend/release/checksums-darwin-${{ matrix.arch }}.sha256
-            **/frontend/release/runtime-assets/*.tar.gz
-            **/frontend/release/runtime-assets/*.json
-            **/frontend/release/runtime-assets/*.sha256
           if-no-files-found: error
 
       - name: Publish release assets (${{ matrix.arch }})
@@ -248,9 +226,5 @@ jobs:
           tag_name: ${{ env.EXPECTED_TAG }}
           files: |
             **/frontend/release/*.dmg
-            **/frontend/release/*.zip
             **/frontend/release/checksums-darwin-${{ matrix.arch }}.sha256
-            **/frontend/release/runtime-assets/*.tar.gz
-            **/frontend/release/runtime-assets/*.json
-            **/frontend/release/runtime-assets/*.sha256
           fail_on_unmatched_files: true

@@ -92,6 +92,17 @@ export interface SettingsUpdate {
   llm_model_name?: string
 }
 
+export type AppStartupState = 'starting' | 'ready' | 'failed'
+
+export interface AppRuntimeStatus {
+  backendOrigin: string
+  backendApiBaseUrl: string
+  backendHealthUrl: string
+  startupState: AppStartupState
+  startupFailureReason: string | null
+  logPath: string
+}
+
 // ─── Stream Events ───────────────────────────────────────────────────────────
 
 export interface StreamEvent {

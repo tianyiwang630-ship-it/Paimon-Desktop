@@ -4,6 +4,7 @@ import { useSessionStore } from '../store/session'
 import { useProjectStore } from '../store/project'
 import { extractPermissionRequired, interruptSession, sendMessage, type SendMessageOptions } from '../api/chat'
 import { getSettings, updateSettings } from '../api/settings'
+import { getApiErrorMessage } from '../api/client'
 import { getAppGuide, getSkillCatalog } from '../api/meta'
 import { confirmPermission, setPermissionMode } from '../api/permissions'
 import type { Message, SettingsUpdate } from '../types'
@@ -418,6 +419,7 @@ export default function ChatPage() {
   })
   const [settingsLoading, setSettingsLoading] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
+  const [settingsError, setSettingsError] = useState('')
   const [assistantViewModes, setAssistantViewModes] = useState<Record<string, AssistantViewMode>>({})
   const [composerExpanded, setComposerExpanded] = useState(false)
   const [statusRetryNoticeBySession, setStatusRetryNoticeBySession] = useState<Record<string, string>>({})
@@ -1313,6 +1315,7 @@ export default function ChatPage() {
     }
     setPanelMode('config')
     setSettingsSaved(false)
+    setSettingsError('')
     try {
       const data = await getSettings()
       setSettingsForm({
@@ -1330,6 +1333,7 @@ export default function ChatPage() {
     e.preventDefault()
     setSettingsLoading(true)
     setSettingsSaved(false)
+    setSettingsError('')
     try {
       await updateSettings(settingsForm)
       setSettingsSaved(true)
@@ -1343,6 +1347,7 @@ export default function ChatPage() {
       }))
     } catch (error) {
       console.error('Failed to save settings:', error)
+      setSettingsError(getApiErrorMessage(error, 'Failed to save settings'))
     } finally {
       setSettingsLoading(false)
     }
@@ -1752,6 +1757,11 @@ export default function ChatPage() {
                 {settingsSaved && (
                   <div className="rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
                     Settings saved.
+                  </div>
+                )}
+                {settingsError && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {settingsError}
                   </div>
                 )}
                 <button

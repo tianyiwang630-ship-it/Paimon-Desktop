@@ -13,7 +13,7 @@
     "electron:dev": "concurrently \"npm run dev\" \"npm run build:main -- --watch\" \"wait-on http://localhost:5173 dist/main/index.js && electron .\"",
     "electron:build": "npm run verify:runtimes && npm run build && electron-builder",
     "preview": "vite preview",
-    "build:runtime-bundles": "node scripts/build-runtime-bundles.mjs"
+    "build:mac-dmg": "npm run verify:runtimes && npm run build && electron-builder --mac dmg"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -131,10 +131,48 @@
     },
     "mac": {
       "target": [
-        "dmg",
-        "zip"
+        "dmg"
       ],
-      "icon": "build/icon.icns"
+      "icon": "build/icon.icns",
+      "extraResources": [
+        {
+          "from": "../agent",
+          "to": "agent"
+        },
+        {
+          "from": "../skills",
+          "to": "skills"
+        },
+        {
+          "from": "../mcp-servers",
+          "to": "mcp-servers",
+          "filter": [
+            "**/*",
+            "!open-websearch/node_modules/npx",
+            "!open-websearch/node_modules/npx/**"
+          ]
+        },
+        {
+          "from": "../requirements.txt",
+          "to": "requirements.txt"
+        },
+        {
+          "from": "../runtime/python",
+          "to": "python"
+        },
+        {
+          "from": "../runtime/node",
+          "to": "node"
+        },
+        {
+          "from": "../runtime/playwright-browsers",
+          "to": "playwright-browsers"
+        },
+        {
+          "from": "../runtime/tools",
+          "to": "tools"
+        }
+      ]
     },
     "pkg": {
       "allowAnywhere": true,
@@ -148,13 +186,5 @@
       ],
       "icon": "build/icon.png"
     }
-  },
-  "runtimeBootstrap": {
-    "githubRepo": "",
-    "releaseTagPrefix": "v",
-    "manifestNameTemplate": "runtime-manifest-${platform}-${arch}.json",
-    "installOptionalPackages": false,
-    "maxRetries": 3,
-    "timeoutMs": 120000
   }
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getSettings, updateSettings } from '../api/settings'
+import { getApiErrorMessage } from '../api/client'
 import type { Settings, SettingsUpdate } from '../types'
 
 export default function SettingsPage() {
@@ -9,6 +10,7 @@ export default function SettingsPage() {
   const [formData, setFormData] = useState<SettingsUpdate>({})
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState(false)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     loadSettings()
@@ -32,6 +34,7 @@ export default function SettingsPage() {
     e.preventDefault()
     setLoading(true)
     setSuccess(false)
+    setError('')
 
     try {
       await updateSettings(formData)
@@ -39,6 +42,7 @@ export default function SettingsPage() {
       await loadSettings()
     } catch (error) {
       console.error('Failed to update settings:', error)
+      setError(getApiErrorMessage(error, 'Failed to update settings'))
     } finally {
       setLoading(false)
     }
@@ -130,6 +134,12 @@ export default function SettingsPage() {
             {success && (
               <div className="rounded-xl bg-green-50 p-3 text-sm text-green-700">
                 Settings saved successfully
+              </div>
+            )}
+
+            {error && (
+              <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700">
+                {error}
               </div>
             )}
 

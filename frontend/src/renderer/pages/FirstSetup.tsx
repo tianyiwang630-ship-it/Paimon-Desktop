@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { updateSettings } from '../api/settings'
+import { getApiErrorMessage } from '../api/client'
 import type { SettingsUpdate } from '../types'
 
 interface FirstSetupProps {
@@ -24,8 +25,8 @@ export default function FirstSetup({ onComplete }: FirstSetupProps) {
     try {
       await updateSettings(formData)
       onComplete()
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to save configuration')
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'Failed to save configuration'))
     } finally {
       setLoading(false)
     }

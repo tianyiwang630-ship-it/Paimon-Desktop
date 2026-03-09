@@ -7,6 +7,7 @@ FastAPI
 """
 
 import sys
+import os
 import logging
 import threading
 from pathlib import Path
@@ -34,6 +35,54 @@ except Exception:
 
 logger = logging.getLogger("agent")
 LOG_RETENTION_DAYS = 7
+DEFAULT_BACKEND_HOST = "127.0.0.1"
+DEFAULT_BACKEND_PORT = 8000
+BACKEND_HOST_ENV_VAR = "SKILLS_MCP_BACKEND_HOST"
+BACKEND_PORT_ENV_VAR = "SKILLS_MCP_BACKEND_PORT"
+BACKEND_APP_ID_ENV_VAR = "SKILLS_MCP_BACKEND_APP_ID"
+BACKEND_APP_VERSION_ENV_VAR = "SKILLS_MCP_BACKEND_APP_VERSION"
+DEFAULT_BACKEND_APP_ID = "com.skills-mcp.desktop"
+DEFAULT_BACKEND_APP_VERSION = "unknown"
+
+
+def get_backend_host() -> str:
+    value = (os.environ.get(BACKEND_HOST_ENV_VAR) or "").strip()
+    return value or DEFAULT_BACKEND_HOST
+
+
+def get_backend_port() -> int:
+    raw = (os.environ.get(BACKEND_PORT_ENV_VAR) or "").strip()
+    if not raw:
+        return DEFAULT_BACKEND_PORT
+
+    try:
+        port = int(raw)
+    except ValueError:
+        logger.warning(f"Invalid {BACKEND_PORT_ENV_VAR}={raw!r}; fallback to {DEFAULT_BACKEND_PORT}")
+        return DEFAULT_BACKEND_PORT
+
+    if port <= 0 or port > 65535:
+        logger.warning(f"Out-of-range {BACKEND_PORT_ENV_VAR}={raw!r}; fallback to {DEFAULT_BACKEND_PORT}")
+        return DEFAULT_BACKEND_PORT
+
+    return port
+
+
+def get_backend_app_id() -> str:
+    value = (os.environ.get(BACKEND_APP_ID_ENV_VAR) or "").strip()
+    return value or DEFAULT_BACKEND_APP_ID
+
+
+def get_backend_app_version() -> str:
+    value = (os.environ.get(BACKEND_APP_VERSION_ENV_VAR) or "").strip()
+    return value or DEFAULT_BACKEND_APP_VERSION
+
+
+BACKEND_HOST = get_backend_host()
+BACKEND_PORT = get_backend_port()
+BACKEND_ORIGIN = f"http://{BACKEND_HOST}:{BACKEND_PORT}"
+BACKEND_APP_ID = get_backend_app_id()
+BACKEND_APP_VERSION = get_backend_app_version()
 
 
 def cleanup_old_logs(log_dir: Path, retention_days: int = LOG_RETENTION_DAYS):
@@ -122,7 +171,7 @@ async def lifespan(app: FastAPI):
     app.state.agent_manager = agent_manager
     app.state.mcp_manager = mcp_manager
     logger.info("AgentManager ")
-    logger.info(" http://localhost:8000")
+    logger.info(f" {BACKEND_ORIGIN}")
     logger.info(f": {logs_dir / 'agent.log'}")
 
     yield  # 
@@ -169,7 +218,11 @@ app.include_router(meta.router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "app_id": BACKEND_APP_ID,
+        "app_version": BACKEND_APP_VERSION,
+    }
 
 
 #   
@@ -177,7 +230,7 @@ def health():
 if __name__ == "__main__":
     uvicorn.run(
         "agent.server.app:app",
-        host="127.0.0.1",
-        port=8000,
+        host=BACKEND_HOST,
+        port=BACKEND_PORT,
         reload=False,
     )

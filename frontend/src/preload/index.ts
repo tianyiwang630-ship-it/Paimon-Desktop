@@ -1,8 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { AppRuntimeStatus, OpenPathResult } from '../shared/appRuntime'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   requestExit: () => ipcRenderer.invoke('app:request-exit'),
+  getRuntimeStatus: () => ipcRenderer.invoke('app:get-runtime-status'),
+  retryBackendStartup: () => ipcRenderer.invoke('app:retry-backend-start'),
+  openBackendLogs: () => ipcRenderer.invoke('app:open-backend-logs'),
   pickFolder: () => ipcRenderer.invoke('files:pick-folder'),
   downloadFile: (url: string, filename?: string) =>
     ipcRenderer.invoke('files:download', { url, filename }),
@@ -11,6 +15,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 export interface ElectronAPI {
   platform: string
   requestExit: () => Promise<boolean>
+  getRuntimeStatus: () => Promise<AppRuntimeStatus>
+  retryBackendStartup: () => Promise<AppRuntimeStatus>
+  openBackendLogs: () => Promise<OpenPathResult>
   pickFolder: () => Promise<string | null>
   downloadFile: (
     url: string,

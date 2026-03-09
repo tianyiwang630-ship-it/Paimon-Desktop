@@ -1,4 +1,4 @@
-﻿name: Build macOS Installer
+name: Build macOS Installer
 
 on:
   workflow_dispatch:
@@ -10,7 +10,81 @@ permissions:
   contents: write
 
 jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      app_dir: ${{ steps.resolve_app_dir.outputs.app_dir }}
+      app_version: ${{ steps.resolve_version.outputs.app_version }}
+      expected_tag: ${{ steps.resolve_version.outputs.expected_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve app directory
+        id: resolve_app_dir
+        shell: bash
+        run: |
+          if [ -d "skills-mcp-beta/frontend" ]; then
+            echo "app_dir=skills-mcp-beta" >> "$GITHUB_OUTPUT"
+          else
+            echo "app_dir=." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+
+      - name: Resolve expected release tag from package version
+        id: resolve_version
+        shell: bash
+        run: |
+          cd "${{ steps.resolve_app_dir.outputs.app_dir }}/frontend"
+          APP_VERSION="$(node -p "require('./package.json').version")"
+          if [ -z "${APP_VERSION}" ]; then
+            echo "Failed to read frontend/package.json version"
+            exit 1
+          fi
+          EXPECTED_TAG="v${APP_VERSION}"
+          echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "expected_tag=${EXPECTED_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Expected release tag: ${EXPECTED_TAG}"
+
+      - name: Validate pushed tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          REF_TAG="${GITHUB_REF_NAME}"
+          EXPECTED_TAG="${{ steps.resolve_version.outputs.expected_tag }}"
+          if [ "${REF_TAG}" != "${EXPECTED_TAG}" ]; then
+            echo "Tag/version mismatch: pushed tag=${REF_TAG}, expected=${EXPECTED_TAG}"
+            exit 1
+          fi
+
+      - name: Ensure expected release tag exists for workflow_dispatch
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          EXPECTED_TAG="${{ steps.resolve_version.outputs.expected_tag }}"
+          REMOTE_LINE="$(git ls-remote --tags origin "refs/tags/${EXPECTED_TAG}" | tail -n1 || true)"
+          if [ -n "${REMOTE_LINE}" ]; then
+            REMOTE_SHA="$(echo "${REMOTE_LINE}" | awk '{print $1}')"
+            if [ "${REMOTE_SHA}" != "${GITHUB_SHA}" ]; then
+              echo "Tag ${EXPECTED_TAG} already exists on ${REMOTE_SHA}, current commit is ${GITHUB_SHA}. Refusing to move tag."
+              exit 1
+            fi
+            echo "Tag ${EXPECTED_TAG} already exists on current commit."
+          else
+            git tag "${EXPECTED_TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${EXPECTED_TAG}"
+            echo "Created tag ${EXPECTED_TAG} at ${GITHUB_SHA}."
+          fi
+
   build-macos:
+    needs: prepare-release
     strategy:
       fail-fast: false
       matrix:
@@ -23,18 +97,11 @@ jobs:
     timeout-minutes: 180
     env:
       CI: "true"
+      APP_DIR: ${{ needs.prepare-release.outputs.app_dir }}
+      APP_VERSION: ${{ needs.prepare-release.outputs.app_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Resolve app directory
-        shell: bash
-        run: |
-          if [ -d "skills-mcp-beta/frontend" ]; then
-            echo "APP_DIR=skills-mcp-beta" >> "$GITHUB_ENV"
-          else
-            echo "APP_DIR=." >> "$GITHUB_ENV"
-          fi
 
       - name: Show build context
         shell: bash
@@ -56,51 +123,6 @@ jobs:
             **/mcp-servers/open-websearch/package-lock.json
             **/mcp-servers/playwright/package-lock.json
             **/mcp-servers/rednote/package-lock.json
-
-      - name: Resolve expected release tag from package version
-        shell: bash
-        run: |
-          cd "${APP_DIR}/frontend"
-          APP_VERSION="$(node -p "require('./package.json').version")"
-          if [ -z "${APP_VERSION}" ]; then
-            echo "Failed to read frontend/package.json version"
-            exit 1
-          fi
-          EXPECTED_TAG="v${APP_VERSION}"
-          echo "APP_VERSION=${APP_VERSION}" >> "$GITHUB_ENV"
-          echo "EXPECTED_TAG=${EXPECTED_TAG}" >> "$GITHUB_ENV"
-          echo "Expected release tag: ${EXPECTED_TAG}"
-
-      - name: Validate pushed tag matches package version
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        run: |
-          REF_TAG="${GITHUB_REF_NAME}"
-          if [ "${REF_TAG}" != "${EXPECTED_TAG}" ]; then
-            echo "Tag/version mismatch: pushed tag=${REF_TAG}, expected=${EXPECTED_TAG}"
-            exit 1
-          fi
-
-      - name: Ensure expected release tag exists for workflow_dispatch
-        if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          REMOTE_LINE="$(git ls-remote --tags origin "refs/tags/${EXPECTED_TAG}" | tail -n1 || true)"
-          if [ -n "${REMOTE_LINE}" ]; then
-            REMOTE_SHA="$(echo "${REMOTE_LINE}" | awk '{print $1}')"
-            if [ "${REMOTE_SHA}" != "${GITHUB_SHA}" ]; then
-              echo "Tag ${EXPECTED_TAG} already exists on ${REMOTE_SHA}, current commit is ${GITHUB_SHA}. Refusing to move tag."
-              exit 1
-            fi
-            echo "Tag ${EXPECTED_TAG} already exists on current commit."
-          else
-            git tag "${EXPECTED_TAG}" "${GITHUB_SHA}"
-            git push origin "refs/tags/${EXPECTED_TAG}"
-            echo "Created tag ${EXPECTED_TAG} at ${GITHUB_SHA}."
-          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -203,20 +225,151 @@ jobs:
           CHECKSUM_FILE="checksums-darwin-${{ matrix.arch }}.sha256"
           shasum -a 256 "${files[@]}" > "${CHECKSUM_FILE}"
 
-      - name: Upload macOS artifacts (${{ matrix.arch }})
+      - name: Write build summary (${{ matrix.arch }})
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend/release"
+          cat > "build-summary-darwin-${{ matrix.arch }}.txt" <<EOF
+          architecture: ${{ matrix.arch }}
+          source bundled runtimes: pass
+          packaged python probe: pass
+          packaged Playwright probe: pass
+          packaged backend health: pass
+          dmg reinstall smoke: pending
+          tool capability note: pandoc/tesseract/qpdf/pdftk are not release-gate capabilities on mac; missing optional tools remain documented limitations.
+          EOF
+
+      - name: Upload macOS build artifacts (${{ matrix.arch }})
         uses: actions/upload-artifact@v4
         with:
           name: paimon-macos-${{ matrix.arch }}
           path: |
             **/frontend/release/*.dmg
             **/frontend/release/checksums-darwin-${{ matrix.arch }}.sha256
+            **/frontend/release/build-summary-darwin-${{ matrix.arch }}.txt
           if-no-files-found: error
 
-      - name: Publish release assets (${{ matrix.arch }})
+  smoke-test-macos:
+    needs:
+      - prepare-release
+      - build-macos
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x64
+          - runner: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      APP_DIR: ${{ needs.prepare-release.outputs.app_dir }}
+      APP_VERSION: ${{ needs.prepare-release.outputs.app_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+
+      - name: Download build artifact (${{ matrix.arch }})
+        uses: actions/download-artifact@v4
+        with:
+          name: paimon-macos-${{ matrix.arch }}
+          path: smoke-input
+
+      - name: Locate dmg artifact (${{ matrix.arch }})
+        shell: bash
+        run: |
+          DMG_PATH="$(find smoke-input -type f -name '*.dmg' | head -n 1 || true)"
+          if [ -z "${DMG_PATH}" ]; then
+            echo "Downloaded artifact does not contain a dmg"
+            find smoke-input -maxdepth 3 -print
+            exit 1
+          fi
+          DMG_PATH="$(cd "$(dirname "${DMG_PATH}")" && pwd)/$(basename "${DMG_PATH}")"
+          echo "DMG_PATH=${DMG_PATH}" >> "$GITHUB_ENV"
+          echo "Resolved dmg: ${DMG_PATH}"
+
+      - name: Mount dmg and copy app (${{ matrix.arch }})
+        shell: bash
+        run: |
+          set -euo pipefail
+          MOUNT_OUTPUT="$(hdiutil attach "${DMG_PATH}" -nobrowse -readonly)"
+          echo "${MOUNT_OUTPUT}"
+          MOUNT_POINT="$(echo "${MOUNT_OUTPUT}" | awk '/\/Volumes\// {print $NF}' | tail -n 1)"
+          if [ -z "${MOUNT_POINT}" ] || [ ! -d "${MOUNT_POINT}" ]; then
+            echo "Failed to resolve mounted dmg volume"
+            exit 1
+          fi
+          APP_IN_DMG="$(find "${MOUNT_POINT}" -maxdepth 2 -type d -name 'Paimon.app' | head -n 1 || true)"
+          if [ -z "${APP_IN_DMG}" ]; then
+            echo "Paimon.app not found inside mounted dmg volume: ${MOUNT_POINT}"
+            find "${MOUNT_POINT}" -maxdepth 2 -print
+            hdiutil detach "${MOUNT_POINT}" -quiet || true
+            exit 1
+          fi
+          COPIED_APP_ROOT="$(mktemp -d "/tmp/paimon-smoke-${{ matrix.arch }}-XXXXXX")"
+          COPIED_APP_PATH="${COPIED_APP_ROOT}/Paimon.app"
+          ditto "${APP_IN_DMG}" "${COPIED_APP_PATH}"
+          hdiutil detach "${MOUNT_POINT}" -quiet
+          echo "COPIED_APP_PATH=${COPIED_APP_PATH}" >> "$GITHUB_ENV"
+          echo "Copied app: ${COPIED_APP_PATH}"
+
+      - name: Verify copied app runtime from dmg (${{ matrix.arch }})
+        shell: bash
+        run: |
+          cd "${APP_DIR}/frontend"
+          node scripts/verify-bundled-runtimes.mjs --skip-source-checks --app "${COPIED_APP_PATH}" --app-version "${APP_VERSION}"
+
+      - name: Write smoke summary (${{ matrix.arch }})
+        shell: bash
+        run: |
+          mkdir -p smoke-output
+          cat > "smoke-output/smoke-summary-darwin-${{ matrix.arch }}.txt" <<EOF
+          architecture: ${{ matrix.arch }}
+          source bundled runtimes: pass (build job)
+          packaged python probe: pass
+          packaged Playwright probe: pass
+          packaged backend health: pass
+          dmg reinstall smoke: pass
+          tool capability note: pandoc/tesseract/qpdf/pdftk are not release-gate capabilities on mac; missing optional tools remain documented limitations.
+          EOF
+
+      - name: Upload smoke summary (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: paimon-macos-smoke-${{ matrix.arch }}
+          path: smoke-output/smoke-summary-darwin-${{ matrix.arch }}.txt
+          if-no-files-found: error
+
+  release-macos:
+    needs:
+      - prepare-release
+      - smoke-test-macos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: paimon-macos-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.EXPECTED_TAG }}
+          tag_name: ${{ needs.prepare-release.outputs.expected_tag }}
           files: |
-            **/frontend/release/*.dmg
-            **/frontend/release/checksums-darwin-${{ matrix.arch }}.sha256
+            release-assets/*.dmg
+            release-assets/**/*.dmg
+            release-assets/checksums-darwin-*.sha256
+            release-assets/**/checksums-darwin-*.sha256
+            release-assets/build-summary-darwin-*.txt
+            release-assets/**/build-summary-darwin-*.txt
+            release-assets/smoke-summary-darwin-*.txt
+            release-assets/**/smoke-summary-darwin-*.txt
           fail_on_unmatched_files: true

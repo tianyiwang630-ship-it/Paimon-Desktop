@@ -29,6 +29,7 @@ function parseArgs(argv) {
   const options = {
     appPath: null,
     appVersion: defaultAppVersion,
+    skipSourceChecks: false,
   }
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -39,6 +40,8 @@ function parseArgs(argv) {
     } else if (current === '--app-version') {
       index += 1
       options.appVersion = argv[index] || options.appVersion
+    } else if (current === '--skip-source-checks') {
+      options.skipSourceChecks = true
     } else {
       fail(`Unknown argument: ${current}`)
     }
@@ -49,6 +52,79 @@ function parseArgs(argv) {
   }
 
   return options
+}
+
+function createProbeSandbox(prefix) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  const homeDir = path.join(root, 'home')
+  const appDataDir = path.join(root, 'appData')
+  const cacheDir = path.join(root, 'cache')
+  const tempDir = path.join(root, 'tmp')
+  const xdgDataDir = path.join(root, 'xdg', 'data')
+  const xdgStateDir = path.join(root, 'xdg', 'state')
+
+  for (const dir of [homeDir, appDataDir, cacheDir, tempDir, xdgDataDir, xdgStateDir]) {
+    fs.mkdirSync(dir, { recursive: true })
+  }
+
+  return {
+    root,
+    homeDir,
+    appDataDir,
+    cacheDir,
+    tempDir,
+    xdgDataDir,
+    xdgStateDir,
+  }
+}
+
+function getBaseSystemPath() {
+  if (process.platform === 'win32') {
+    return process.env.SystemRoot
+      ? `${path.join(process.env.SystemRoot, 'System32')}${path.delimiter}${path.join(process.env.SystemRoot)}`
+      : process.env.PATH || ''
+  }
+  return ['/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(path.delimiter)
+}
+
+function buildSanitizedEnv(overrides = {}, prependPathEntries = []) {
+  const env = { ...process.env }
+  const blockedExact = new Set([
+    'HOME',
+    'USERPROFILE',
+    'APPDATA',
+    'LOCALAPPDATA',
+    'TEMP',
+    'TMP',
+    'TMPDIR',
+    'NODE_PATH',
+    'NODE_OPTIONS',
+    'PYTHONHOME',
+    'PYTHONPATH',
+    'PYTHONSTARTUP',
+    'PYTHONUSERBASE',
+    'VIRTUAL_ENV',
+    'PLAYWRIGHT_BROWSERS_PATH',
+    'PLAYWRIGHT_DOWNLOAD_HOST',
+    'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD',
+  ])
+  const blockedPrefixes = ['XDG_', 'CONDA_', 'PYENV_', 'POETRY_', 'PIPENV_', 'UV_', 'SKILLS_MCP_']
+
+  for (const key of Object.keys(env)) {
+    const normalized = key.toUpperCase()
+    if (blockedExact.has(normalized) || blockedPrefixes.some((prefix) => normalized.startsWith(prefix))) {
+      delete env[key]
+    }
+  }
+
+  const cleanPathEntries = prependPathEntries.filter(Boolean)
+  const basePath = getBaseSystemPath()
+  env.PATH = cleanPathEntries.length > 0 ? `${cleanPathEntries.join(path.delimiter)}${path.delimiter}${basePath}` : basePath
+
+  return {
+    ...env,
+    ...overrides,
+  }
 }
 
 function isWithinRoot(candidatePath, allowedRoot) {
@@ -195,6 +271,7 @@ function runPlaywrightLaunchProbe({
   nodeAllowedRoot = null,
   browsersAllowedRoot = null,
 }) {
+  const sandbox = createProbeSandbox('paimon-playwright-probe-')
   verifyExecutablePath(nodePath, `${label} Node runtime`, nodeAllowedRoot)
 
   if (!exists(browsersRoot)) {
@@ -219,19 +296,33 @@ function runPlaywrightLaunchProbe({
 
   const nodeRoot = getBundledNodeRoot(nodePath)
   const nodeModules = path.join(nodeRoot, 'node_modules')
+  const nodeDir = path.dirname(nodePath)
   const probe = spawnSync(nodePath, ['-e', getPlaywrightLaunchProbeScript()], {
     cwd: nodeRoot,
     stdio: 'pipe',
     windowsHide: true,
     timeout: 45000,
-    env: {
-      ...process.env,
-      NODE_PATH: nodeModules,
-      PLAYWRIGHT_BROWSERS_PATH: browsersRoot,
-      SKILLS_MCP_PLAYWRIGHT_BROWSERS: browsersRoot,
-      PLAYWRIGHT_PROBE_EXECUTABLE_PATH: chromiumExecutable,
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
-    },
+    env: buildSanitizedEnv(
+      {
+        HOME: sandbox.homeDir,
+        USERPROFILE: sandbox.homeDir,
+        APPDATA: sandbox.appDataDir,
+        LOCALAPPDATA: sandbox.cacheDir,
+        TEMP: sandbox.tempDir,
+        TMP: sandbox.tempDir,
+        TMPDIR: sandbox.tempDir,
+        XDG_CONFIG_HOME: sandbox.appDataDir,
+        XDG_CACHE_HOME: sandbox.cacheDir,
+        XDG_DATA_HOME: sandbox.xdgDataDir,
+        XDG_STATE_HOME: sandbox.xdgStateDir,
+        NODE_PATH: nodeModules,
+        PLAYWRIGHT_BROWSERS_PATH: browsersRoot,
+        SKILLS_MCP_PLAYWRIGHT_BROWSERS: browsersRoot,
+        PLAYWRIGHT_PROBE_EXECUTABLE_PATH: chromiumExecutable,
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
+      },
+      [nodeDir],
+    ),
   })
 
   if (probe.error || probe.status !== 0) {
@@ -429,16 +520,27 @@ function verifyBundledPythonDependencies() {
     fail(`Missing bundled Python runtime. Checked: ${expected.pythonCandidates.join(', ')}`)
   }
 
+  const sandbox = createProbeSandbox('paimon-python-probe-')
   const probe = spawnSync(pythonPath, ['-c', getPythonDependencyProbeScript()], {
     cwd: projectRoot,
     stdio: 'pipe',
     windowsHide: true,
     timeout: 20000,
-    env: {
-      ...process.env,
+    env: buildSanitizedEnv({
+      HOME: sandbox.homeDir,
+      USERPROFILE: sandbox.homeDir,
+      APPDATA: sandbox.appDataDir,
+      LOCALAPPDATA: sandbox.cacheDir,
+      TEMP: sandbox.tempDir,
+      TMP: sandbox.tempDir,
+      TMPDIR: sandbox.tempDir,
+      XDG_CONFIG_HOME: sandbox.appDataDir,
+      XDG_CACHE_HOME: sandbox.cacheDir,
+      XDG_DATA_HOME: sandbox.xdgDataDir,
+      XDG_STATE_HOME: sandbox.xdgStateDir,
       PYTHONNOUSERSITE: '1',
       PIP_USER: '0',
-    },
+    }),
   })
 
   if (probe.error || probe.status !== 0) {
@@ -674,9 +776,9 @@ async function verifyPackagedBackendStartup(appPath, appVersion) {
   const port = await reserveLoopbackPort()
   const origin = `http://127.0.0.1:${port}`
   const healthUrl = `${origin}/api/health`
-  const verifyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'paimon-macos-app-verify-'))
-  const runtimeRoot = path.join(verifyRoot, 'workspace-root')
-  const dataRoot = path.join(verifyRoot, 'data-root')
+  const sandbox = createProbeSandbox('paimon-macos-app-verify-')
+  const runtimeRoot = path.join(sandbox.root, 'workspace-root')
+  const dataRoot = path.join(sandbox.root, 'data-root')
   const homeDir = path.join(dataRoot, 'home')
   const appDataDir = path.join(dataRoot, 'electron', 'appData')
   const cacheDir = path.join(dataRoot, 'electron', 'cache')
@@ -688,13 +790,23 @@ async function verifyPackagedBackendStartup(appPath, appVersion) {
     fs.mkdirSync(dir, { recursive: true })
   }
 
-  const env = {
-    ...process.env,
-    SKILLS_MCP_RUNTIME_ROOT: runtimeRoot,
-    SKILLS_MCP_DATA_ROOT: dataRoot,
-    SKILLS_MCP_PYTHON: packaged.pythonPath,
-    SKILLS_MCP_NODE: packaged.nodePath,
-    SKILLS_MCP_PLAYWRIGHT_BROWSERS: packaged.browsersRoot,
+  const pythonPathEntries = getBundledPythonPathEntries(packaged.pythonPath).filter((p) => exists(p))
+  const prependPathEntries = [...pythonPathEntries]
+  let nodeModules = ''
+  if (exists(packaged.nodePath)) {
+    const nodeDir = path.dirname(packaged.nodePath)
+    prependPathEntries.push(nodeDir)
+    const nodeRoot = getBundledNodeRoot(packaged.nodePath)
+    nodeModules = path.join(nodeRoot, 'node_modules')
+  }
+
+  const env = buildSanitizedEnv(
+    {
+      SKILLS_MCP_RUNTIME_ROOT: runtimeRoot,
+      SKILLS_MCP_DATA_ROOT: dataRoot,
+      SKILLS_MCP_PYTHON: packaged.pythonPath,
+      SKILLS_MCP_NODE: packaged.nodePath,
+      SKILLS_MCP_PLAYWRIGHT_BROWSERS: packaged.browsersRoot,
     PLAYWRIGHT_BROWSERS_PATH: packaged.browsersRoot,
     SKILLS_MCP_BACKEND_HOST: '127.0.0.1',
     SKILLS_MCP_BACKEND_PORT: String(port),
@@ -708,25 +820,16 @@ async function verifyPackagedBackendStartup(appPath, appVersion) {
     LOCALAPPDATA: cacheDir,
     TEMP: tempDir,
     TMP: tempDir,
-    TMPDIR: tempDir,
-    XDG_CONFIG_HOME: appDataDir,
-    XDG_CACHE_HOME: cacheDir,
-    XDG_DATA_HOME: xdgDataDir,
-    XDG_STATE_HOME: xdgStateDir,
-  }
-
-  for (const p of getBundledPythonPathEntries(packaged.pythonPath)) {
-    if (exists(p)) {
-      env.PATH = env.PATH ? `${p}${path.delimiter}${env.PATH}` : p
-    }
-  }
-  if (exists(packaged.nodePath)) {
-    const nodeDir = path.dirname(packaged.nodePath)
-    env.PATH = env.PATH ? `${nodeDir}${path.delimiter}${env.PATH}` : nodeDir
-    const nodeRoot = getBundledNodeRoot(packaged.nodePath)
-    const nodeModules = path.join(nodeRoot, 'node_modules')
-    env.NODE_PATH = env.NODE_PATH ? `${nodeModules}${path.delimiter}${env.NODE_PATH}` : nodeModules
-  }
+      TMPDIR: tempDir,
+      XDG_CONFIG_HOME: appDataDir,
+      XDG_CACHE_HOME: cacheDir,
+      XDG_DATA_HOME: xdgDataDir,
+      XDG_STATE_HOME: xdgStateDir,
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
+      ...(nodeModules ? { NODE_PATH: nodeModules } : {}),
+    },
+    prependPathEntries,
+  )
 
   const child = spawn(packaged.pythonPath, ['-s', packaged.backendScript], {
     cwd: runtimeRoot,
@@ -783,15 +886,26 @@ async function verifyPackagedMacApp(appPath, appVersion) {
     fail(`Packaged backend script missing: ${packaged.backendScript}`)
   }
 
+  const sandbox = createProbeSandbox('paimon-packaged-import-')
   const importProbe = spawnSync(packaged.pythonPath, ['-c', getPythonDependencyProbeScript()], {
     cwd: packaged.resourcesRoot,
     stdio: 'pipe',
     timeout: 20000,
-    env: {
-      ...process.env,
+    env: buildSanitizedEnv({
+      HOME: sandbox.homeDir,
+      USERPROFILE: sandbox.homeDir,
+      APPDATA: sandbox.appDataDir,
+      LOCALAPPDATA: sandbox.cacheDir,
+      TEMP: sandbox.tempDir,
+      TMP: sandbox.tempDir,
+      TMPDIR: sandbox.tempDir,
+      XDG_CONFIG_HOME: sandbox.appDataDir,
+      XDG_CACHE_HOME: sandbox.cacheDir,
+      XDG_DATA_HOME: sandbox.xdgDataDir,
+      XDG_STATE_HOME: sandbox.xdgStateDir,
       PYTHONNOUSERSITE: '1',
       PIP_USER: '0',
-    },
+    }),
   })
   if (importProbe.error || importProbe.status !== 0) {
     const stderr = (importProbe.stderr || '').toString().trim()
@@ -815,14 +929,16 @@ async function verifyPackagedMacApp(appPath, appVersion) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
 
-  verifyBundledPythonLayout()
-  verifyRuntimeFiles()
-  verifyBundledNodeSkillDependencies()
-  verifyBundledPythonDependencies()
-  verifyBundledTools()
-  verifyMcpLocalEntrypoints()
-  verifyBundledPlaywrightLaunchProbe()
-  console.log('[verify:runtimes] OK: bundled Python/Node/tools, skill JS dependencies, MCP local entrypoints, and Playwright launch probe are present.')
+  if (!options.skipSourceChecks) {
+    verifyBundledPythonLayout()
+    verifyRuntimeFiles()
+    verifyBundledNodeSkillDependencies()
+    verifyBundledPythonDependencies()
+    verifyBundledTools()
+    verifyMcpLocalEntrypoints()
+    verifyBundledPlaywrightLaunchProbe()
+    console.log('[verify:runtimes] OK: bundled Python/Node/tools, skill JS dependencies, MCP local entrypoints, and Playwright launch probe are present.')
+  }
 
   if (options.appPath) {
     await verifyPackagedMacApp(path.resolve(options.appPath), options.appVersion || defaultAppVersion)

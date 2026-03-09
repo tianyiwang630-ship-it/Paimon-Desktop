@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 _ASSET_ROOT = Path(__file__).resolve().parent.parent.parent
 _DEFAULT_WINDOWS_DATA_ROOT = Path("D:/PaimonData")
+_DEFAULT_MACOS_DATA_ROOT = Path.home() / "PaimonData"
 
 
 def _resolve_path(value: str) -> Path:
@@ -76,6 +78,22 @@ def _resolve_windows_data_root() -> Path:
     return root
 
 
+def _resolve_macos_data_root() -> Path:
+    raw = (os.environ.get("SKILLS_MCP_DATA_ROOT") or "").strip()
+    candidate = Path(raw).expanduser() if raw else _DEFAULT_MACOS_DATA_ROOT
+    normalized = candidate.resolve()
+    allowed_root = _DEFAULT_MACOS_DATA_ROOT.resolve()
+
+    try:
+        normalized.relative_to(allowed_root)
+    except ValueError:
+        if normalized != allowed_root:
+            normalized = allowed_root
+
+    normalized.mkdir(parents=True, exist_ok=True)
+    return normalized
+
+
 def get_runtime_root() -> Path:
     """
     Return writable runtime root.
@@ -93,11 +111,22 @@ def get_runtime_root() -> Path:
                 candidate.relative_to(data_root)
             except ValueError:
                 candidate = data_root / "workspace-root"
+        elif sys.platform == "darwin":
+            data_root = _resolve_macos_data_root()
+            try:
+                candidate.relative_to(data_root)
+            except ValueError:
+                candidate = data_root / "workspace-root"
         candidate.mkdir(parents=True, exist_ok=True)
         return candidate
 
     if os.name == "nt":
         root = _resolve_windows_data_root() / "workspace-root"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    if sys.platform == "darwin":
+        root = _resolve_macos_data_root() / "workspace-root"
         root.mkdir(parents=True, exist_ok=True)
         return root
 

@@ -25,6 +25,7 @@ let backendStartupFailureReason: string | null = null
 const BACKEND_READY_TIMEOUT_MS = 30_000
 const BACKEND_POLL_INTERVAL_MS = 500
 const WINDOWS_DATA_ROOT = path.join('D:\\', 'PaimonData')
+const MACOS_DATA_ROOT = path.join(app.getPath('home'), 'PaimonData')
 const PYTHON_PROBE_TIMEOUT_MS = readPositiveIntEnv('SKILLS_MCP_PYTHON_PROBE_TIMEOUT_MS', 100_000)
 const BACKEND_MAX_RETRIES = readPositiveIntEnv('SKILLS_MCP_BACKEND_MAX_RETRIES', 5)
 const BACKEND_RETRY_BASE_MS = readPositiveIntEnv('SKILLS_MCP_BACKEND_RETRY_BASE_MS', 1_000)
@@ -183,10 +184,24 @@ function resolveWindowsDataRoot(): string {
   return normalized
 }
 
-function configureWindowsAppPaths(): void {
-  if (process.platform !== 'win32') return
+function resolveMacDataRoot(): string {
+  const override = (process.env.SKILLS_MCP_DATA_ROOT || '').trim()
+  const candidate = override || MACOS_DATA_ROOT
+  const normalized = path.resolve(candidate)
+  const allowedRoot = path.resolve(MACOS_DATA_ROOT)
+  const allowedPrefix = `${allowedRoot}${path.sep}`
 
-  const dataRoot = resolveWindowsDataRoot()
+  if (normalized !== allowedRoot && !normalized.startsWith(allowedPrefix)) {
+    console.warn(`[macOS Data Root] Reject override outside ~/PaimonData: ${candidate}`)
+    ensureDir(allowedRoot)
+    return allowedRoot
+  }
+
+  ensureDir(normalized)
+  return normalized
+}
+
+function configureAppPathsForDataRoot(dataRoot: string): void {
   const appDataDir = path.join(dataRoot, 'electron', 'appData')
   const userDataDir = path.join(dataRoot, 'electron', 'userData')
   const sessionDataDir = path.join(dataRoot, 'electron', 'sessionData')
@@ -206,6 +221,17 @@ function configureWindowsAppPaths(): void {
   app.setPath('temp', tempDir)
   app.setPath('crashDumps', crashDumpsDir)
   app.setAppLogsPath(logsDir)
+}
+
+function configurePlatformAppPaths(): void {
+  if (process.platform === 'win32') {
+    configureAppPathsForDataRoot(resolveWindowsDataRoot())
+    return
+  }
+
+  if (process.platform === 'darwin') {
+    configureAppPathsForDataRoot(resolveMacDataRoot())
+  }
 }
 
 interface PythonCandidate {
@@ -566,14 +592,29 @@ function buildBackendEnv(
     }
   }
 
+  let dataRootForEnv: string | null = null
   if (process.platform === 'win32') {
-    const dataRoot = resolveWindowsDataRoot()
-    const homeDir = path.join(dataRoot, 'home')
-    const appDataDir = path.join(dataRoot, 'Roaming')
-    const localAppDataDir = path.join(dataRoot, 'Local')
-    const tempDir = path.join(dataRoot, 'tmp')
+    dataRootForEnv = resolveWindowsDataRoot()
+  } else if (process.platform === 'darwin') {
+    dataRootForEnv = resolveMacDataRoot()
+  }
 
-    for (const dir of [homeDir, appDataDir, localAppDataDir, tempDir]) {
+  if (dataRootForEnv) {
+    env.SKILLS_MCP_DATA_ROOT = dataRootForEnv
+  }
+
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    const dataRoot = dataRootForEnv || runtimeRoot
+    const homeDir = path.join(dataRoot, 'home')
+    const appDataDir =
+      process.platform === 'win32' ? path.join(dataRoot, 'Roaming') : path.join(dataRoot, 'electron', 'appData')
+    const localAppDataDir =
+      process.platform === 'win32' ? path.join(dataRoot, 'Local') : path.join(dataRoot, 'electron', 'cache')
+    const tempDir = path.join(dataRoot, 'tmp')
+    const xdgDataDir = path.join(dataRoot, 'xdg', 'data')
+    const xdgStateDir = path.join(dataRoot, 'xdg', 'state')
+
+    for (const dir of [homeDir, appDataDir, localAppDataDir, tempDir, xdgDataDir, xdgStateDir]) {
       ensureDir(dir)
     }
 
@@ -584,6 +625,13 @@ function buildBackendEnv(
     env.TEMP = tempDir
     env.TMP = tempDir
     env.TMPDIR = tempDir
+
+    if (process.platform === 'darwin') {
+      env.XDG_CONFIG_HOME = appDataDir
+      env.XDG_CACHE_HOME = localAppDataDir
+      env.XDG_DATA_HOME = xdgDataDir
+      env.XDG_STATE_HOME = xdgStateDir
+    }
   }
 
   if (bundledNodePath) {
@@ -635,6 +683,26 @@ function resolveRuntimeRoot(): string {
       }
 
       console.warn(`[Runtime Root] Reject override outside Windows data root: ${override}`)
+    }
+
+    const runtimeRoot = path.join(dataRoot, 'workspace-root')
+    ensureDir(runtimeRoot)
+    return runtimeRoot
+  }
+
+  if (process.platform === 'darwin') {
+    const dataRoot = resolveMacDataRoot()
+
+    if (override) {
+      const normalizedOverride = path.resolve(override)
+      const allowedPrefix = `${dataRoot}${path.sep}`
+
+      if (normalizedOverride === dataRoot || normalizedOverride.startsWith(allowedPrefix)) {
+        ensureDir(normalizedOverride)
+        return normalizedOverride
+      }
+
+      console.warn(`[Runtime Root] Reject override outside macOS data root: ${override}`)
     }
 
     const runtimeRoot = path.join(dataRoot, 'workspace-root')
@@ -1053,7 +1121,7 @@ function createWindow() {
   })
 }
 
-configureWindowsAppPaths()
+configurePlatformAppPaths()
 
 ipcMain.handle('app:request-exit', async () => {
   isAppQuitting = true

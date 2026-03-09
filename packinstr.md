@@ -4,6 +4,9 @@
 
 This document describes how to package this project into Windows installer EXEs with a reproducible process.
 The maintained operator entrypoint is the root-level `powershell.txt` script.
+Reference policy for packaged app writable data roots:
+- Windows: `D:\PaimonData`
+- macOS: `~/PaimonData`
 
 Included in scope:
 

@@ -30,6 +30,7 @@ const PYTHON_PROBE_TIMEOUT_MS = readPositiveIntEnv('SKILLS_MCP_PYTHON_PROBE_TIME
 const BACKEND_MAX_RETRIES = readPositiveIntEnv('SKILLS_MCP_BACKEND_MAX_RETRIES', 5)
 const BACKEND_RETRY_BASE_MS = readPositiveIntEnv('SKILLS_MCP_BACKEND_RETRY_BASE_MS', 1_000)
 const BACKEND_STARTUP_LOG_FILE = 'backend-startup.log'
+const ENABLE_PLAYWRIGHT_RUNTIME_SELF_CHECK = process.env.SKILLS_MCP_ENABLE_PLAYWRIGHT_RUNTIME_SELF_CHECK === '1'
 const INTERCEPT_ERROR_CODES = new Set(['EPERM', 'EACCES', 'UNKNOWN'])
 
 let backendStartupLogPath: string | null = null
@@ -1203,7 +1204,12 @@ async function startPythonBackend(): Promise<{ ok: boolean; reason?: string }> {
 
   logPackagedPlaywrightContext(bundledNodePath, bundledPlaywrightBrowsersPath, runtimePlaywrightBrowsersPath)
   if (app.isPackaged && process.platform === 'darwin' && bundledNodePath && runtimePlaywrightBrowsersPath) {
-    runPackagedPlaywrightSelfCheck(bundledNodePath, runtimePlaywrightBrowsersPath)
+    if (ENABLE_PLAYWRIGHT_RUNTIME_SELF_CHECK) {
+      logBackendStartup('info', '[Playwright Self Check] Enabled via SKILLS_MCP_ENABLE_PLAYWRIGHT_RUNTIME_SELF_CHECK=1')
+      runPackagedPlaywrightSelfCheck(bundledNodePath, runtimePlaywrightBrowsersPath)
+    } else {
+      logBackendStartup('info', '[Playwright Self Check] Disabled by default for packaged mac app; CI packaged verification is the release gate.')
+    }
   }
 
   const candidates = getPythonCandidates(bundledPythonPath ? [bundledPythonPath] : undefined)

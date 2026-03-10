@@ -957,6 +957,197 @@ async function waitForBackendHealth(urlString, expectedAppId, expectedAppVersion
   throw new Error(`Backend health check timed out after ${timeoutMs}ms. Last error: ${lastError}`)
 }
 
+function waitForChildExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({
+      timedOut: false,
+      exitCode: child.exitCode,
+      signal: child.signalCode,
+      event: 'already-exited',
+    })
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    let timer = null
+
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      if (timer) {
+        clearTimeout(timer)
+      }
+      child.removeListener('exit', onExit)
+      child.removeListener('close', onClose)
+      resolve(result)
+    }
+
+    const onExit = (code, signal) => {
+      finish({
+        timedOut: false,
+        exitCode: code,
+        signal,
+        event: 'exit',
+      })
+    }
+
+    const onClose = (code, signal) => {
+      finish({
+        timedOut: false,
+        exitCode: code,
+        signal,
+        event: 'close',
+      })
+    }
+
+    child.once('exit', onExit)
+    child.once('close', onClose)
+    timer = setTimeout(() => {
+      finish({
+        timedOut: true,
+        exitCode: child.exitCode,
+        signal: child.signalCode,
+        event: 'timeout',
+      })
+    }, timeoutMs)
+  })
+}
+
+function formatBackendChildShutdownDiagnostics({ label, appPath, pythonPath, backendScript, healthUrl, spawnError, stdout, stderr, attempts, finalState }) {
+  const attemptText =
+    attempts.length > 0
+      ? attempts
+          .map((attempt, index) => {
+            const sendError = attempt.sendError ? attempt.sendError : '(none)'
+            return `attempt ${index + 1}: signal=${attempt.signal} killSent=${attempt.killSent ? 'yes' : 'no'} waitMs=${attempt.waitMs} timedOut=${
+              attempt.result.timedOut ? 'yes' : 'no'
+            } event=${attempt.result.event} exitCode=${attempt.result.exitCode === null ? 'null' : String(attempt.result.exitCode)} signalResult=${
+              attempt.result.signal || '(none)'
+            } sendError=${sendError}`
+          })
+          .join('\n')
+      : '(no shutdown attempts recorded)'
+
+  return [
+    `${label}:`,
+    `app: ${appPath}`,
+    `python: ${pythonPath}`,
+    `backend: ${backendScript}`,
+    `health: ${healthUrl}`,
+    `spawnError: ${spawnError ? String(spawnError) : '(none)'}`,
+    `stdout: ${stdout.trim() || '(empty)'}`,
+    `stderr: ${stderr.trim() || '(empty)'}`,
+    `shutdown attempts:\n${attemptText}`,
+    `final exitCode: ${finalState.exitCode === null ? 'null' : String(finalState.exitCode)}`,
+    `final signal: ${finalState.signal || '(none)'}`,
+    `final event: ${finalState.event}`,
+  ].join('\n')
+}
+
+async function terminateChildProcess(child, { label, appPath, pythonPath, backendScript, healthUrl, spawnError, stdout, stderr }) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return {
+      ok: true,
+      attempts: [],
+      finalState: {
+        exitCode: child.exitCode,
+        signal: child.signalCode,
+        event: 'already-exited',
+      },
+      diagnostics: formatBackendChildShutdownDiagnostics({
+        label,
+        appPath,
+        pythonPath,
+        backendScript,
+        healthUrl,
+        spawnError,
+        stdout,
+        stderr,
+        attempts: [],
+        finalState: {
+          exitCode: child.exitCode,
+          signal: child.signalCode,
+          event: 'already-exited',
+        },
+      }),
+    }
+  }
+
+  const attempts = []
+  for (const step of [
+    { signal: 'SIGTERM', waitMs: 5000 },
+    { signal: 'SIGKILL', waitMs: 5000 },
+  ]) {
+    let killSent = false
+    let sendError = null
+    try {
+      killSent = child.kill(step.signal)
+    } catch (error) {
+      sendError = error && error.message ? error.message : String(error)
+    }
+
+    const result = await waitForChildExit(child, step.waitMs)
+    attempts.push({
+      signal: step.signal,
+      waitMs: step.waitMs,
+      killSent,
+      sendError,
+      result,
+    })
+
+    if (!result.timedOut) {
+      return {
+        ok: true,
+        attempts,
+        finalState: {
+          exitCode: result.exitCode,
+          signal: result.signal,
+          event: result.event,
+        },
+        diagnostics: formatBackendChildShutdownDiagnostics({
+          label,
+          appPath,
+          pythonPath,
+          backendScript,
+          healthUrl,
+          spawnError,
+          stdout,
+          stderr,
+          attempts,
+          finalState: {
+            exitCode: result.exitCode,
+            signal: result.signal,
+            event: result.event,
+          },
+        }),
+      }
+    }
+  }
+
+  const finalState = {
+    exitCode: child.exitCode,
+    signal: child.signalCode,
+    event: 'still-running-after-sigkill',
+  }
+  return {
+    ok: false,
+    attempts,
+    finalState,
+    diagnostics: formatBackendChildShutdownDiagnostics({
+      label,
+      appPath,
+      pythonPath,
+      backendScript,
+      healthUrl,
+      spawnError,
+      stdout,
+      stderr,
+      attempts,
+      finalState,
+    }),
+  }
+}
+
 async function verifyPackagedBackendStartup(appPath, appVersion) {
   const expectedAppId = 'com.skills-mcp.desktop'
   const packaged = getPackagedMacPaths(appPath)
@@ -1041,19 +1232,41 @@ async function verifyPackagedBackendStartup(appPath, appVersion) {
   try {
     await waitForBackendHealth(healthUrl, expectedAppId, appVersion, 30000)
   } catch (error) {
-    try {
-      child.kill('SIGTERM')
-    } catch {}
+    const shutdown = await terminateChildProcess(child, {
+      label: 'Packaged backend shutdown after health probe failure',
+      appPath,
+      pythonPath: packaged.pythonPath,
+      backendScript: packaged.backendScript,
+      healthUrl,
+      spawnError,
+      stdout,
+      stderr,
+    })
     fail(
       `Packaged backend health probe failed for ${appPath}.\npython: ${packaged.pythonPath}\nbackend: ${packaged.backendScript}\nhealth: ${healthUrl}\nspawnError: ${
         spawnError ? String(spawnError) : '(none)'
-      }\nstdout: ${stdout.trim()}\nstderr: ${stderr.trim()}\nreason: ${error && error.message ? error.message : String(error)}`,
+      }\nstdout: ${stdout.trim()}\nstderr: ${stderr.trim()}\nreason: ${error && error.message ? error.message : String(error)}\n${shutdown.diagnostics}`,
     )
   }
 
-  try {
-    child.kill('SIGTERM')
-  } catch {}
+  const shutdown = await terminateChildProcess(child, {
+    label: 'Packaged backend shutdown after successful verification',
+    appPath,
+    pythonPath: packaged.pythonPath,
+    backendScript: packaged.backendScript,
+    healthUrl,
+    spawnError,
+    stdout,
+    stderr,
+  })
+  if (!shutdown.ok) {
+    fail(`Packaged backend probe completed but backend process did not exit cleanly.\n${shutdown.diagnostics}`)
+  }
+  console.log(
+    `[verify:runtimes] Packaged backend probe child exited cleanly after verification. event=${shutdown.finalState.event} exitCode=${
+      shutdown.finalState.exitCode === null ? 'null' : String(shutdown.finalState.exitCode)
+    } signal=${shutdown.finalState.signal || '(none)'}`,
+  )
 }
 
 async function verifyPackagedMacApp(appPath, appVersion) {

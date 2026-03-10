@@ -11,6 +11,12 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@playwright/mcp": "0.0.68"
+    "@playwright/mcp": "0.0.68",
+    "playwright": "1.56.0",
+    "playwright-core": "1.56.0"
+  },
+  "overrides": {
+    "playwright": "1.56.0",
+    "playwright-core": "1.56.0"
   }
 }

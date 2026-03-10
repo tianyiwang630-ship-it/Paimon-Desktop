@@ -12,9 +12,12 @@ const projectRoot = path.resolve(scriptDir, '..', '..')
 const runtimeRoot = path.join(projectRoot, 'runtime')
 const mcpRoot = path.join(projectRoot, 'mcp-servers')
 const frontendPackageJsonPath = path.join(projectRoot, 'frontend', 'package.json')
+const playwrightPackageJsonPath = path.join(mcpRoot, 'playwright', 'package.json')
+const playwrightPackageLockPath = path.join(mcpRoot, 'playwright', 'package-lock.json')
 const defaultAppVersion = fs.existsSync(frontendPackageJsonPath)
   ? JSON.parse(fs.readFileSync(frontendPackageJsonPath, 'utf-8')).version || 'unknown'
   : 'unknown'
+let cachedPlaywrightVersionInfo = null
 
 function exists(filePath) {
   return fs.existsSync(filePath)
@@ -23,6 +26,67 @@ function exists(filePath) {
 function fail(message) {
   console.error(`\n[verify:runtimes] ${message}`)
   process.exit(1)
+}
+
+function readJsonFile(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+}
+
+function isPrereleaseVersion(version) {
+  return /(?:alpha|beta|next|canary|rc)/i.test(version)
+}
+
+function getPlaywrightVersionInfo() {
+  if (cachedPlaywrightVersionInfo) {
+    return cachedPlaywrightVersionInfo
+  }
+
+  if (!exists(playwrightPackageJsonPath)) {
+    fail(`Missing Playwright MCP package manifest: ${playwrightPackageJsonPath}`)
+  }
+
+  if (!exists(playwrightPackageLockPath)) {
+    fail(`Missing Playwright MCP package-lock.json: ${playwrightPackageLockPath}`)
+  }
+
+  const packageJson = readJsonFile(playwrightPackageJsonPath)
+  const packageLock = readJsonFile(playwrightPackageLockPath)
+  const lockPackages = packageLock && packageLock.packages ? packageLock.packages : {}
+  const rootPackage = lockPackages[''] || {}
+  const mcpPackage = lockPackages['node_modules/@playwright/mcp'] || {}
+  const playwrightPackage = lockPackages['node_modules/playwright'] || {}
+  const playwrightCorePackage = lockPackages['node_modules/playwright-core'] || {}
+
+  const info = {
+    mcp: mcpPackage.version || (packageJson.dependencies && packageJson.dependencies['@playwright/mcp']) || 'unknown',
+    playwright:
+      playwrightPackage.version || (rootPackage.dependencies && rootPackage.dependencies.playwright) || 'unknown',
+    playwrightCore:
+      playwrightCorePackage.version ||
+      (rootPackage.dependencies && rootPackage.dependencies['playwright-core']) ||
+      'unknown',
+  }
+  info.prerelease = {
+    mcp: isPrereleaseVersion(info.mcp),
+    playwright: isPrereleaseVersion(info.playwright),
+    playwrightCore: isPrereleaseVersion(info.playwrightCore),
+  }
+  info.hasDisallowedPrerelease = info.prerelease.playwright || info.prerelease.playwrightCore
+  cachedPlaywrightVersionInfo = info
+  return info
+}
+
+function verifyPlaywrightVersionPolicy() {
+  const info = getPlaywrightVersionInfo()
+  console.log(
+    `[verify:runtimes] Playwright versions: @playwright/mcp=${info.mcp} | playwright=${info.playwright} | playwright-core=${info.playwrightCore}`,
+  )
+
+  if (info.hasDisallowedPrerelease) {
+    fail(
+      `Disallowed Playwright prerelease detected for mac packaging. @playwright/mcp=${info.mcp}, playwright=${info.playwright}, playwright-core=${info.playwrightCore}. Pin stable playwright/playwright-core versions before release.`,
+    )
+  }
 }
 
 function parseArgs(argv) {
@@ -1318,11 +1382,15 @@ async function verifyPackagedMacApp(appPath, appVersion) {
   })
 
   await verifyPackagedBackendStartup(appPath, appVersion)
-  console.log(`[verify:runtimes] OK: packaged mac app verified: ${appPath}`)
+  const info = getPlaywrightVersionInfo()
+  console.log(
+    `[verify:runtimes] OK: packaged mac app verified: ${appPath} | @playwright/mcp=${info.mcp} | playwright=${info.playwright} | playwright-core=${info.playwrightCore}`,
+  )
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
+  verifyPlaywrightVersionPolicy()
 
   if (!options.skipSourceChecks) {
     verifyBundledPythonLayout()
@@ -1332,7 +1400,10 @@ async function main() {
     verifyBundledTools()
     verifyMcpLocalEntrypoints()
     verifyBundledPlaywrightLaunchProbe()
-    console.log('[verify:runtimes] OK: bundled Python/Node/tools, skill JS dependencies, MCP local entrypoints, and Playwright launch probe are present.')
+    const info = getPlaywrightVersionInfo()
+    console.log(
+      `[verify:runtimes] OK: bundled Python/Node/tools, skill JS dependencies, MCP local entrypoints, and Playwright launch probe are present. Playwright versions: @playwright/mcp=${info.mcp}, playwright=${info.playwright}, playwright-core=${info.playwrightCore}`,
+    )
   }
 
   if (options.appPath) {

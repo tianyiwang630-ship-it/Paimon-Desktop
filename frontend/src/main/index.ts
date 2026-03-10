@@ -1189,14 +1189,14 @@ async function startPythonBackend(): Promise<{ ok: boolean; reason?: string }> {
     bundledToolsPathEntries = getBundledToolsPathEntries()
     if (process.platform !== 'win32') {
       if (!existsSync(bundledPlaywrightBrowsersPath)) {
-        const reason = `Bundled Playwright browsers not found: ${bundledPlaywrightBrowsersPath}. Package runtime/playwright-browsers before building.`
-        setBackendStartupStatus('failed', reason)
-        return {
-          ok: false,
-          reason,
-        }
+        logBackendStartup(
+          'warn',
+          `[Playwright Runtime] Bundled browsers path not found: ${bundledPlaywrightBrowsersPath}. Playwright-dependent features may be unavailable, but backend startup will continue.`,
+        )
+        runtimePlaywrightBrowsersPath = null
+      } else {
+        runtimePlaywrightBrowsersPath = bundledPlaywrightBrowsersPath
       }
-      runtimePlaywrightBrowsersPath = bundledPlaywrightBrowsersPath
     } else {
       seedPlaywrightBrowsersFromBundled(bundledPlaywrightBrowsersPath, runtimePlaywrightBrowsersPath)
     }

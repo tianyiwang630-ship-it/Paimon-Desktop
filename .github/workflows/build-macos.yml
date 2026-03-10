@@ -168,6 +168,26 @@ jobs:
             npm install --no-audit --no-fund
           fi
 
+      - name: Resolve Playwright versions
+        shell: bash
+        run: |
+          cd "${APP_DIR}"
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const lockPath = path.join(process.cwd(), 'mcp-servers', 'playwright', 'package-lock.json');
+          const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+          const packages = lock.packages || {};
+          const mcp = packages['node_modules/@playwright/mcp']?.version || 'unknown';
+          const playwright = packages['node_modules/playwright']?.version || 'unknown';
+          const playwrightCore = packages['node_modules/playwright-core']?.version || 'unknown';
+          const prerelease = /(?:alpha|beta|next|canary|rc)/i.test(playwright) || /(?:alpha|beta|next|canary|rc)/i.test(playwrightCore);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PLAYWRIGHT_MCP_VERSION=${mcp}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PLAYWRIGHT_VERSION=${playwright}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PLAYWRIGHT_CORE_VERSION=${playwrightCore}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PLAYWRIGHT_PRERELEASE=${prerelease ? 'yes' : 'no'}\n`);
+          NODE
+
       - name: Prepare bundled macOS runtimes
         shell: bash
         run: |
@@ -236,6 +256,10 @@ jobs:
           packaged Playwright probe: pass
           packaged backend health: pass
           dmg reinstall smoke: pending
+          @playwright/mcp version: ${PLAYWRIGHT_MCP_VERSION}
+          playwright version: ${PLAYWRIGHT_VERSION}
+          playwright-core version: ${PLAYWRIGHT_CORE_VERSION}
+          playwright prerelease audit: ${PLAYWRIGHT_PRERELEASE}
           tool capability note: pandoc/tesseract/qpdf/pdftk are not release-gate capabilities on mac; missing optional tools remain documented limitations.
           EOF
 
@@ -274,6 +298,26 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20.19.0"
+
+      - name: Resolve Playwright versions
+        shell: bash
+        run: |
+          cd "${APP_DIR}"
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const lockPath = path.join(process.cwd(), 'mcp-servers', 'playwright', 'package-lock.json');
+          const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+          const packages = lock.packages || {};
+          const mcp = packages['node_modules/@playwright/mcp']?.version || 'unknown';
+          const playwright = packages['node_modules/playwright']?.version || 'unknown';
+          const playwrightCore = packages['node_modules/playwright-core']?.version || 'unknown';
+          const prerelease = /(?:alpha|beta|next|canary|rc)/i.test(playwright) || /(?:alpha|beta|next|canary|rc)/i.test(playwrightCore);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PLAYWRIGHT_MCP_VERSION=${mcp}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PLAYWRIGHT_VERSION=${playwright}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PLAYWRIGHT_CORE_VERSION=${playwrightCore}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PLAYWRIGHT_PRERELEASE=${prerelease ? 'yes' : 'no'}\n`);
+          NODE
 
       - name: Download build artifact (${{ matrix.arch }})
         uses: actions/download-artifact@v4
@@ -336,6 +380,10 @@ jobs:
           packaged Playwright probe: pass
           packaged backend health: pass
           dmg reinstall smoke: pass
+          @playwright/mcp version: ${PLAYWRIGHT_MCP_VERSION}
+          playwright version: ${PLAYWRIGHT_VERSION}
+          playwright-core version: ${PLAYWRIGHT_CORE_VERSION}
+          playwright prerelease audit: ${PLAYWRIGHT_PRERELEASE}
           tool capability note: pandoc/tesseract/qpdf/pdftk are not release-gate capabilities on mac; missing optional tools remain documented limitations.
           EOF
 

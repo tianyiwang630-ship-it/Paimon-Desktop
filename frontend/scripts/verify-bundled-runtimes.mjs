@@ -624,10 +624,10 @@ function inspectPath(filePath) {
     error: null,
   }
 
-  if (result.isSymlink) {
-    try {
-      result.realPath = fs.realpathSync(filePath)
-    } catch (error) {
+  try {
+    result.realPath = fs.realpathSync(filePath)
+  } catch (error) {
+    if (result.isSymlink) {
       const nodeErr = error
       result.brokenSymlink = true
       result.error = nodeErr && nodeErr.message ? nodeErr.message : String(error)
@@ -646,8 +646,18 @@ function verifyExecutablePath(filePath, label, allowedRoot = null) {
   if (info.brokenSymlink) {
     fail(`${label} is a broken symlink: ${filePath}. ${info.error || ''}`.trim())
   }
-  if (allowedRoot && info.realPath && !isWithinRoot(info.realPath, allowedRoot)) {
-    fail(`${label} resolves outside allowed root.\npath: ${filePath}\nrealpath: ${info.realPath}\nallowed root: ${allowedRoot}`)
+  let canonicalAllowedRoot = allowedRoot
+  if (allowedRoot && exists(allowedRoot)) {
+    try {
+      canonicalAllowedRoot = fs.realpathSync(allowedRoot)
+    } catch {
+      canonicalAllowedRoot = path.resolve(allowedRoot)
+    }
+  }
+  if (allowedRoot && info.realPath && !isWithinRoot(info.realPath, canonicalAllowedRoot)) {
+    fail(
+      `${label} resolves outside allowed root.\npath: ${filePath}\nrealpath: ${info.realPath}\nallowed root: ${allowedRoot}\ncanonical allowed root: ${canonicalAllowedRoot}`,
+    )
   }
   try {
     fs.accessSync(filePath, fs.constants.X_OK)

@@ -408,17 +408,35 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Collect release publish files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p publish-assets
+          while IFS= read -r file; do
+            cp -f "${file}" "publish-assets/$(basename "${file}")"
+          done < <(
+            find release-assets -type f \
+              \( -name '*.dmg' \
+              -o -name 'checksums-darwin-*.sha256' \
+              -o -name 'build-summary-darwin-*.txt' \
+              -o -name 'smoke-summary-darwin-*.txt' \) \
+              | sort
+          )
+
+          if ! find publish-assets -maxdepth 1 -type f | grep -q .; then
+            echo "No publishable release files found after artifact download"
+            find release-assets -maxdepth 4 -print || true
+            exit 1
+          fi
+
+          echo "Collected release files:"
+          find publish-assets -maxdepth 1 -type f -print | sort
+
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare-release.outputs.expected_tag }}
           files: |
-            release-assets/*.dmg
-            release-assets/**/*.dmg
-            release-assets/checksums-darwin-*.sha256
-            release-assets/**/checksums-darwin-*.sha256
-            release-assets/build-summary-darwin-*.txt
-            release-assets/**/build-summary-darwin-*.txt
-            release-assets/smoke-summary-darwin-*.txt
-            release-assets/**/smoke-summary-darwin-*.txt
+            publish-assets/*
           fail_on_unmatched_files: true

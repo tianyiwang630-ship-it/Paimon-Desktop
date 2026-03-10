@@ -1108,7 +1108,19 @@ function formatBackendChildShutdownDiagnostics({ label, appPath, pythonPath, bac
   ].join('\n')
 }
 
-async function terminateChildProcess(child, { label, appPath, pythonPath, backendScript, healthUrl, spawnError, stdout, stderr }) {
+function readCapturedOutputFile(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf-8').trim()
+  } catch {
+    return ''
+  }
+}
+
+async function terminateChildProcess(
+  child,
+  { label, appPath, pythonPath, backendScript, healthUrl, spawnError, readCapturedOutput = () => ({ stdout: '', stderr: '' }) },
+) {
+  const capturedOutput = readCapturedOutput()
   if (child.exitCode !== null || child.signalCode !== null) {
     return {
       ok: true,
@@ -1124,12 +1136,12 @@ async function terminateChildProcess(child, { label, appPath, pythonPath, backen
         pythonPath,
         backendScript,
         healthUrl,
-        spawnError,
-        stdout,
-        stderr,
-        attempts: [],
-        finalState: {
-          exitCode: child.exitCode,
+          spawnError,
+          stdout: capturedOutput.stdout,
+          stderr: capturedOutput.stderr,
+          attempts: [],
+          finalState: {
+            exitCode: child.exitCode,
           signal: child.signalCode,
           event: 'already-exited',
         },
@@ -1160,6 +1172,7 @@ async function terminateChildProcess(child, { label, appPath, pythonPath, backen
     })
 
     if (!result.timedOut) {
+      const latestOutput = readCapturedOutput()
       return {
         ok: true,
         attempts,
@@ -1175,8 +1188,8 @@ async function terminateChildProcess(child, { label, appPath, pythonPath, backen
           backendScript,
           healthUrl,
           spawnError,
-          stdout,
-          stderr,
+          stdout: latestOutput.stdout,
+          stderr: latestOutput.stderr,
           attempts,
           finalState: {
             exitCode: result.exitCode,
@@ -1193,6 +1206,7 @@ async function terminateChildProcess(child, { label, appPath, pythonPath, backen
     signal: child.signalCode,
     event: 'still-running-after-sigkill',
   }
+  const latestOutput = readCapturedOutput()
   return {
     ok: false,
     attempts,
@@ -1204,8 +1218,8 @@ async function terminateChildProcess(child, { label, appPath, pythonPath, backen
       backendScript,
       healthUrl,
       spawnError,
-      stdout,
-      stderr,
+      stdout: latestOutput.stdout,
+      stderr: latestOutput.stderr,
       attempts,
       finalState,
     }),
@@ -1227,6 +1241,8 @@ async function verifyPackagedBackendStartup(appPath, appVersion) {
   const tempDir = path.join(dataRoot, 'tmp')
   const xdgDataDir = path.join(dataRoot, 'xdg', 'data')
   const xdgStateDir = path.join(dataRoot, 'xdg', 'state')
+  const stdoutLogPath = path.join(sandbox.root, 'backend-stdout.log')
+  const stderrLogPath = path.join(sandbox.root, 'backend-stderr.log')
 
   for (const dir of [runtimeRoot, homeDir, appDataDir, cacheDir, tempDir, xdgDataDir, xdgStateDir]) {
     fs.mkdirSync(dir, { recursive: true })
@@ -1273,24 +1289,23 @@ async function verifyPackagedBackendStartup(appPath, appVersion) {
     prependPathEntries,
   )
 
+  const stdoutFd = fs.openSync(stdoutLogPath, 'w')
+  const stderrFd = fs.openSync(stderrLogPath, 'w')
   const child = spawn(packaged.pythonPath, ['-s', packaged.backendScript], {
     cwd: runtimeRoot,
     env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', stdoutFd, stderrFd],
   })
-
-  let stdout = ''
-  let stderr = ''
-  child.stdout?.on('data', (chunk) => {
-    stdout += String(chunk)
-  })
-  child.stderr?.on('data', (chunk) => {
-    stderr += String(chunk)
-  })
+  fs.closeSync(stdoutFd)
+  fs.closeSync(stderrFd)
 
   let spawnError = null
   child.on('error', (error) => {
     spawnError = error
+  })
+  const readCapturedOutput = () => ({
+    stdout: readCapturedOutputFile(stdoutLogPath),
+    stderr: readCapturedOutputFile(stderrLogPath),
   })
 
   try {
@@ -1303,13 +1318,15 @@ async function verifyPackagedBackendStartup(appPath, appVersion) {
       backendScript: packaged.backendScript,
       healthUrl,
       spawnError,
-      stdout,
-      stderr,
+      readCapturedOutput,
     })
+    const capturedOutput = readCapturedOutput()
     fail(
       `Packaged backend health probe failed for ${appPath}.\npython: ${packaged.pythonPath}\nbackend: ${packaged.backendScript}\nhealth: ${healthUrl}\nspawnError: ${
         spawnError ? String(spawnError) : '(none)'
-      }\nstdout: ${stdout.trim()}\nstderr: ${stderr.trim()}\nreason: ${error && error.message ? error.message : String(error)}\n${shutdown.diagnostics}`,
+      }\nstdout: ${capturedOutput.stdout || '(empty)'}\nstderr: ${capturedOutput.stderr || '(empty)'}\nreason: ${
+        error && error.message ? error.message : String(error)
+      }\n${shutdown.diagnostics}`,
     )
   }
 
@@ -1320,8 +1337,7 @@ async function verifyPackagedBackendStartup(appPath, appVersion) {
     backendScript: packaged.backendScript,
     healthUrl,
     spawnError,
-    stdout,
-    stderr,
+    readCapturedOutput,
   })
   if (!shutdown.ok) {
     fail(`Packaged backend probe completed but backend process did not exit cleanly.\n${shutdown.diagnostics}`)

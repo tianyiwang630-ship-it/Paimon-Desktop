@@ -344,9 +344,10 @@ jobs:
           set -euo pipefail
           MOUNT_OUTPUT="$(hdiutil attach "${DMG_PATH}" -nobrowse -readonly)"
           echo "${MOUNT_OUTPUT}"
-          MOUNT_POINT="$(echo "${MOUNT_OUTPUT}" | awk '/\/Volumes\// {print $NF}' | tail -n 1)"
+          MOUNT_POINT="$(printf '%s\n' "${MOUNT_OUTPUT}" | grep -o '/Volumes/.*' | tail -n 1 || true)"
           if [ -z "${MOUNT_POINT}" ] || [ ! -d "${MOUNT_POINT}" ]; then
             echo "Failed to resolve mounted dmg volume"
+            printf 'Resolved mount candidate: %s\n' "${MOUNT_POINT:-"(empty)"}"
             exit 1
           fi
           APP_IN_DMG="$(find "${MOUNT_POINT}" -maxdepth 2 -type d -name 'Paimon.app' | head -n 1 || true)"

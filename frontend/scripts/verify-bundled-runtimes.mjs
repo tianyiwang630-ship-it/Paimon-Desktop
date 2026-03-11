@@ -397,8 +397,37 @@ function getPlaywrightMcpCliPath() {
   return path.join(mcpRoot, 'playwright', 'node_modules', '@playwright', 'mcp', 'cli.js')
 }
 
-function loadPlaywrightMcpBundle() {
-  return requireCjs(path.join(mcpRoot, 'playwright', 'node_modules', 'playwright-core', 'lib', 'mcpBundle.js'))
+function getPlaywrightMcpBundlePath() {
+  return path.join(mcpRoot, 'playwright', 'node_modules', 'playwright-core', 'lib', 'mcpBundle.js')
+}
+
+function loadPlaywrightMcpBundle({ bundlePath, label, allowedRoot = null }) {
+  const info = inspectPath(bundlePath)
+  if (!info.exists) {
+    fail(`${label} Playwright MCP bundle missing: ${bundlePath}`)
+  }
+  if (info.brokenSymlink) {
+    fail(`${label} Playwright MCP bundle is a broken symlink: ${bundlePath}. ${info.error || ''}`.trim())
+  }
+
+  let canonicalAllowedRoot = allowedRoot
+  if (allowedRoot && exists(allowedRoot)) {
+    try {
+      canonicalAllowedRoot = fs.realpathSync(allowedRoot)
+    } catch {
+      canonicalAllowedRoot = path.resolve(allowedRoot)
+    }
+  }
+
+  const resolvedBundlePath = info.realPath || path.resolve(bundlePath)
+  if (allowedRoot && !isWithinRoot(resolvedBundlePath, canonicalAllowedRoot)) {
+    fail(
+      `${label} Playwright MCP bundle resolved outside the packaged app resources root.\nrequested path: ${bundlePath}\nresolved path: ${resolvedBundlePath}\nallowed root: ${allowedRoot}\ncanonical allowed root: ${canonicalAllowedRoot}\nThis indicates packaged verification is incorrectly referencing a source workspace path.`,
+    )
+  }
+
+  console.log(`[verify:runtimes] ${label} Playwright MCP bundle path: ${resolvedBundlePath}`)
+  return requireCjs(resolvedBundlePath)
 }
 
 function getPlaywrightLaunchProbeScript() {
@@ -509,9 +538,11 @@ async function runPlaywrightMcpToolProbe({
   nodePath,
   browsersRoot,
   mcpCliPath,
+  mcpBundlePath,
   label,
   nodeAllowedRoot = null,
   browsersAllowedRoot = null,
+  mcpBundleAllowedRoot = null,
 }) {
   const sandbox = createProbeSandbox('paimon-playwright-mcp-')
   verifyExecutablePath(nodePath, `${label} Node runtime`, nodeAllowedRoot)
@@ -532,7 +563,11 @@ async function runPlaywrightMcpToolProbe({
   const nodeRoot = getBundledNodeRoot(nodePath)
   const nodeModules = path.join(nodeRoot, 'node_modules')
   const nodeDir = path.dirname(nodePath)
-  const mcpBundle = loadPlaywrightMcpBundle()
+  const mcpBundle = loadPlaywrightMcpBundle({
+    bundlePath: mcpBundlePath,
+    label,
+    allowedRoot: mcpBundleAllowedRoot,
+  })
   const transport = new mcpBundle.StdioClientTransport({
     command: nodePath,
     args: [mcpCliPath, '--browser', 'chromium', '--headless', '--isolated'],
@@ -1189,6 +1224,7 @@ async function verifyBundledPlaywrightMcpToolProbe() {
     nodePath: expected.node,
     browsersRoot: getPlaywrightBrowsersRoot(),
     mcpCliPath: getPlaywrightMcpCliPath(),
+    mcpBundlePath: getPlaywrightMcpBundlePath(),
     label: 'Bundled',
     nodeAllowedRoot: path.join(runtimeRoot, 'node'),
     browsersAllowedRoot: path.join(runtimeRoot, 'playwright-browsers'),
@@ -1204,6 +1240,7 @@ function getPackagedMacPaths(appPath) {
     backendScript: path.join(resourcesRoot, 'agent', 'server', 'app.py'),
     browsersRoot: path.join(resourcesRoot, 'playwright-browsers'),
     mcpCliPath: path.join(resourcesRoot, 'mcp-servers', 'playwright', 'node_modules', '@playwright', 'mcp', 'cli.js'),
+    mcpBundlePath: path.join(resourcesRoot, 'mcp-servers', 'playwright', 'node_modules', 'playwright-core', 'lib', 'mcpBundle.js'),
   }
 }
 
@@ -1655,9 +1692,11 @@ async function verifyPackagedMacApp(appPath, appVersion) {
     nodePath: packaged.nodePath,
     browsersRoot: packaged.browsersRoot,
     mcpCliPath: packaged.mcpCliPath,
+    mcpBundlePath: packaged.mcpBundlePath,
     label: 'Packaged app',
     nodeAllowedRoot: path.join(packaged.resourcesRoot, 'node'),
     browsersAllowedRoot: path.join(packaged.resourcesRoot, 'playwright-browsers'),
+    mcpBundleAllowedRoot: packaged.resourcesRoot,
   })
 
   await verifyPackagedBackendStartup(appPath, appVersion)

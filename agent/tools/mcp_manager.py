@@ -262,7 +262,7 @@ class MCPManager:
             except Exception as e:
                 self.servers[name]['status'] = 'failed'
                 self.servers[name]['error'] = str(e)
-                print(f"   {name}: {e}")
+                print(f"   {name}: {e} (continuing without this server's tools)")
 
         await asyncio.gather(*(
             _connect_one(name, client)

@@ -952,6 +952,7 @@ function buildBackendEnv(
     ensureDir(playwrightBrowsersPath)
     env.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsersPath
     env.SKILLS_MCP_PLAYWRIGHT_BROWSERS = playwrightBrowsersPath
+    env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1'
   }
 
   if (selectedPython.command.includes(path.sep) || path.isAbsolute(selectedPython.command)) {
@@ -1268,11 +1269,11 @@ async function startPythonBackend(): Promise<{ ok: boolean; reason?: string }> {
       }`,
     )
   } else if (app.isPackaged && process.platform === 'win32' && bundledPlaywrightBrowsersPath) {
-    logBackendStartup(
-      'warn',
-      `[Playwright Runtime] Bundled seed path not found: ${bundledPlaywrightBrowsersPath}. Runtime auto-download remains available.`,
-    )
-  }
+      logBackendStartup(
+        'warn',
+        `[Playwright Runtime] Bundled seed path not found: ${bundledPlaywrightBrowsersPath}. Playwright-dependent features may be unavailable because runtime download is disabled.`,
+      )
+    }
 
   let lastFailure = 'Backend startup did not complete.'
 

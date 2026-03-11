@@ -1,6 +1,7 @@
 import fs from 'fs'
 import http from 'http'
 import net from 'net'
+import { createRequire } from 'module'
 import os from 'os'
 import path from 'path'
 import process from 'process'
@@ -18,6 +19,12 @@ const defaultAppVersion = fs.existsSync(frontendPackageJsonPath)
   ? JSON.parse(fs.readFileSync(frontendPackageJsonPath, 'utf-8')).version || 'unknown'
   : 'unknown'
 let cachedPlaywrightVersionInfo = null
+const PLAYWRIGHT_MCP_CLIENT_INFO = {
+  name: 'paimon-runtime-verifier',
+  version: '1.0.0',
+}
+const WINDOWS_SPAWN_FALLBACK_CODES = new Set(['EPERM', 'EACCES'])
+const requireCjs = createRequire(import.meta.url)
 
 function exists(filePath) {
   return fs.existsSync(filePath)
@@ -56,9 +63,18 @@ function getPlaywrightVersionInfo() {
   const mcpPackage = lockPackages['node_modules/@playwright/mcp'] || {}
   const playwrightPackage = lockPackages['node_modules/playwright'] || {}
   const playwrightCorePackage = lockPackages['node_modules/playwright-core'] || {}
+  const rootDependencies = packageJson.dependencies || {}
+  const rootOverrides = packageJson.overrides || {}
+  const mcpDependencies = mcpPackage.dependencies || {}
 
   const info = {
     mcp: mcpPackage.version || (packageJson.dependencies && packageJson.dependencies['@playwright/mcp']) || 'unknown',
+    expectedPlaywright: mcpDependencies.playwright || 'unknown',
+    expectedPlaywrightCore: mcpDependencies['playwright-core'] || 'unknown',
+    declaredPlaywright: rootDependencies.playwright || 'unknown',
+    declaredPlaywrightCore: rootDependencies['playwright-core'] || 'unknown',
+    overridePlaywright: rootOverrides.playwright || 'unknown',
+    overridePlaywrightCore: rootOverrides['playwright-core'] || 'unknown',
     playwright:
       playwrightPackage.version || (rootPackage.dependencies && rootPackage.dependencies.playwright) || 'unknown',
     playwrightCore:
@@ -82,9 +98,47 @@ function verifyPlaywrightVersionPolicy() {
     `[verify:runtimes] Playwright versions: @playwright/mcp=${info.mcp} | playwright=${info.playwright} | playwright-core=${info.playwrightCore}`,
   )
 
-  if (info.hasDisallowedPrerelease) {
+  const mismatches = []
+  if (info.expectedPlaywright !== 'unknown' && info.playwright !== info.expectedPlaywright) {
+    mismatches.push(`resolved playwright=${info.playwright} but @playwright/mcp expects ${info.expectedPlaywright}`)
+  }
+  if (info.expectedPlaywrightCore !== 'unknown' && info.playwrightCore !== info.expectedPlaywrightCore) {
+    mismatches.push(`resolved playwright-core=${info.playwrightCore} but @playwright/mcp expects ${info.expectedPlaywrightCore}`)
+  }
+  if (info.declaredPlaywright !== 'unknown' && info.expectedPlaywright !== 'unknown' && info.declaredPlaywright !== info.expectedPlaywright) {
+    mismatches.push(`package.json declares playwright=${info.declaredPlaywright} but @playwright/mcp expects ${info.expectedPlaywright}`)
+  }
+  if (
+    info.declaredPlaywrightCore !== 'unknown' &&
+    info.expectedPlaywrightCore !== 'unknown' &&
+    info.declaredPlaywrightCore !== info.expectedPlaywrightCore
+  ) {
+    mismatches.push(
+      `package.json declares playwright-core=${info.declaredPlaywrightCore} but @playwright/mcp expects ${info.expectedPlaywrightCore}`,
+    )
+  }
+  if (info.overridePlaywright !== 'unknown' && info.expectedPlaywright !== 'unknown' && info.overridePlaywright !== info.expectedPlaywright) {
+    mismatches.push(`package.json overrides playwright=${info.overridePlaywright} but @playwright/mcp expects ${info.expectedPlaywright}`)
+  }
+  if (
+    info.overridePlaywrightCore !== 'unknown' &&
+    info.expectedPlaywrightCore !== 'unknown' &&
+    info.overridePlaywrightCore !== info.expectedPlaywrightCore
+  ) {
+    mismatches.push(
+      `package.json overrides playwright-core=${info.overridePlaywrightCore} but @playwright/mcp expects ${info.expectedPlaywrightCore}`,
+    )
+  }
+
+  if (mismatches.length > 0) {
     fail(
-      `Disallowed Playwright prerelease detected for mac packaging. @playwright/mcp=${info.mcp}, playwright=${info.playwright}, playwright-core=${info.playwrightCore}. Pin stable playwright/playwright-core versions before release.`,
+      `Playwright dependency mismatch detected.\n${mismatches.join('\n')}\nAction: align mcp-servers/playwright/package.json and lockfile to the exact versions required by @playwright/mcp, then reinstall dependencies before packaging.`,
+    )
+  }
+
+  if (info.hasDisallowedPrerelease) {
+    console.warn(
+      `[verify:runtimes] Warning: Playwright prerelease detected but allowed because it matches @playwright/mcp exactly. @playwright/mcp=${info.mcp}, playwright=${info.playwright}, playwright-core=${info.playwrightCore}`,
     )
   }
 }
@@ -140,6 +194,12 @@ function createProbeSandbox(prefix) {
     xdgDataDir,
     xdgStateDir,
   }
+}
+
+function writeNodeProbeScript(sandbox, fileName, script) {
+  const scriptPath = path.join(sandbox.root, fileName)
+  fs.writeFileSync(scriptPath, `${script.trim()}\n`, 'utf-8')
+  return scriptPath
 }
 
 function getBaseSystemPath() {
@@ -280,6 +340,35 @@ function getBundledRuntimeRootFromExecutable(executablePath) {
   return executableDir
 }
 
+function quoteForCmd(arg) {
+  const escaped = String(arg).replace(/"/g, '""')
+  return `"${escaped}"`
+}
+
+function quoteForPowerShell(arg) {
+  const escaped = String(arg).replace(/'/g, "''")
+  return `'${escaped}'`
+}
+
+function spawnBundledNodeSync(nodePath, args, options) {
+  const directResult = spawnSync(nodePath, args, options)
+  if (
+    process.platform !== 'win32' ||
+    !directResult.error ||
+    !WINDOWS_SPAWN_FALLBACK_CODES.has(String(directResult.error.code || '').toUpperCase())
+  ) {
+    return directResult
+  }
+
+  const powerShellExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const command = `& ${[nodePath, ...args].map((arg) => quoteForPowerShell(arg)).join(' ')}`
+  return spawnSync(powerShellExe, ['-NoProfile', '-NonInteractive', '-Command', command], options)
+}
+
+function spawnBundledNodeProcess(nodePath, args, options) {
+  return spawn(nodePath, args, options)
+}
+
 function getBundledPythonPathEntries(pythonExe) {
   const entries = []
   const pythonRoot = getBundledRuntimeRootFromExecutable(pythonExe)
@@ -306,6 +395,10 @@ function getPlaywrightBrowsersRoot() {
 
 function getPlaywrightMcpCliPath() {
   return path.join(mcpRoot, 'playwright', 'node_modules', '@playwright', 'mcp', 'cli.js')
+}
+
+function loadPlaywrightMcpBundle() {
+  return requireCjs(path.join(mcpRoot, 'playwright', 'node_modules', 'playwright-core', 'lib', 'mcpBundle.js'))
 }
 
 function getPlaywrightLaunchProbeScript() {
@@ -361,7 +454,8 @@ function runPlaywrightLaunchProbe({
   const nodeRoot = getBundledNodeRoot(nodePath)
   const nodeModules = path.join(nodeRoot, 'node_modules')
   const nodeDir = path.dirname(nodePath)
-  const probe = spawnSync(nodePath, ['-e', getPlaywrightLaunchProbeScript()], {
+  const probeScriptPath = writeNodeProbeScript(sandbox, 'playwright-launch-probe.cjs', getPlaywrightLaunchProbeScript())
+  const probe = spawnBundledNodeSync(nodePath, [probeScriptPath], {
     cwd: nodeRoot,
     stdio: 'pipe',
     windowsHide: true,
@@ -395,6 +489,139 @@ function runPlaywrightLaunchProbe({
     fail(
       `${label} Playwright launch probe failed.\nnode: ${nodePath}\nbrowsers: ${browsersRoot}\nchromium: ${chromiumExecutable}\nmcp: ${mcpCliPath}\nstdout: ${stdout}\nstderr: ${stderr}`,
     )
+  }
+}
+
+function formatPlaywrightMcpProbeFailure({ label, nodePath, browsersRoot, mcpCliPath, stdout, stderr, extraLines = [] }) {
+  const detailLines = [
+    `${label} Playwright MCP tool probe failed.`,
+    `node: ${nodePath}`,
+    `browsers: ${browsersRoot}`,
+    `mcp: ${mcpCliPath}`,
+    ...extraLines,
+    `stdout: ${stdout || '(empty)'}`,
+    `stderr: ${stderr || '(empty)'}`,
+  ]
+  fail(detailLines.join('\n'))
+}
+
+async function runPlaywrightMcpToolProbe({
+  nodePath,
+  browsersRoot,
+  mcpCliPath,
+  label,
+  nodeAllowedRoot = null,
+  browsersAllowedRoot = null,
+}) {
+  const sandbox = createProbeSandbox('paimon-playwright-mcp-')
+  verifyExecutablePath(nodePath, `${label} Node runtime`, nodeAllowedRoot)
+
+  if (!exists(browsersRoot)) {
+    fail(`${label} Playwright browsers directory missing: ${browsersRoot}`)
+  }
+  if (!exists(mcpCliPath)) {
+    fail(`${label} Playwright MCP entrypoint missing: ${mcpCliPath}`)
+  }
+
+  const chromiumExecutable = findBundledChromiumExecutable(browsersRoot)
+  if (!chromiumExecutable) {
+    fail(`${label} Playwright Chromium executable not found under: ${browsersRoot}`)
+  }
+  verifyExecutablePath(chromiumExecutable, `${label} Chromium executable`, browsersAllowedRoot || browsersRoot)
+
+  const nodeRoot = getBundledNodeRoot(nodePath)
+  const nodeModules = path.join(nodeRoot, 'node_modules')
+  const nodeDir = path.dirname(nodePath)
+  const mcpBundle = loadPlaywrightMcpBundle()
+  const transport = new mcpBundle.StdioClientTransport({
+    command: nodePath,
+    args: [mcpCliPath, '--browser', 'chromium', '--headless', '--isolated'],
+    cwd: nodeRoot,
+    stderr: 'pipe',
+    env: buildSanitizedEnv(
+      {
+        HOME: sandbox.homeDir,
+        USERPROFILE: sandbox.homeDir,
+        APPDATA: sandbox.appDataDir,
+        LOCALAPPDATA: sandbox.cacheDir,
+        TEMP: sandbox.tempDir,
+        TMP: sandbox.tempDir,
+        TMPDIR: sandbox.tempDir,
+        XDG_CONFIG_HOME: sandbox.appDataDir,
+        XDG_CACHE_HOME: sandbox.cacheDir,
+        XDG_DATA_HOME: sandbox.xdgDataDir,
+        XDG_STATE_HOME: sandbox.xdgStateDir,
+        NODE_PATH: nodeModules,
+        PLAYWRIGHT_BROWSERS_PATH: browsersRoot,
+        SKILLS_MCP_PLAYWRIGHT_BROWSERS: browsersRoot,
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
+        PLAYWRIGHT_MCP_BROWSER: 'chromium',
+      },
+      [nodeDir],
+    ),
+  })
+  const client = new mcpBundle.Client(PLAYWRIGHT_MCP_CLIENT_INFO)
+
+  let stdoutText = ''
+  let stderrText = ''
+  transport.stderr?.on('data', (chunk) => {
+    stderrText += chunk.toString('utf8')
+  })
+
+  let timeoutHandle = null
+  const withTimeout = async (promise, description) => {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(`timed out while ${description}`))
+        }, 45000)
+      }),
+    ])
+  }
+
+  try {
+    await withTimeout(client.connect(transport), 'connecting to Playwright MCP')
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle)
+      timeoutHandle = null
+    }
+    const listedTools = await withTimeout(client.listTools(), 'listing Playwright MCP tools')
+    const tools = Array.isArray(listedTools) ? listedTools : Array.isArray(listedTools?.tools) ? listedTools.tools : []
+    if (tools.length === 0) {
+      throw new Error('Playwright MCP reported zero tools')
+    }
+    stdoutText = tools
+      .map((tool) => (tool && typeof tool.name === 'string' ? tool.name : ''))
+      .filter(Boolean)
+      .join(', ')
+    console.log(
+      `[verify:runtimes] ${label} Playwright MCP tool probe passed: ${tools.length} tools (${stdoutText})`,
+    )
+  } catch (error) {
+    formatPlaywrightMcpProbeFailure({
+      label,
+      nodePath,
+      browsersRoot,
+      mcpCliPath,
+      stdout: stdoutText.trim(),
+      stderr: stderrText.trim(),
+      extraLines: [`reason: ${error && error.message ? error.message : String(error)}`],
+    })
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle)
+    }
+    try {
+      if (typeof client.close === 'function') {
+        await client.close()
+      }
+    } catch {}
+    try {
+      if (typeof transport.close === 'function') {
+        await transport.close()
+      }
+    } catch {}
   }
 }
 
@@ -762,22 +989,28 @@ if (unresolved.length > 0) {
   process.exit(1);
 }
 `.trim()
+  const sandbox = createProbeSandbox('paimon-node-resolve-')
+  const resolveProbePath = writeNodeProbeScript(sandbox, 'node-resolve-probe.cjs', resolveProbeScript)
 
-  const probe = spawnSync(nodePath, ['-e', resolveProbeScript], {
+  const probe = spawnBundledNodeSync(nodePath, [resolveProbePath], {
     cwd: nodeRoot,
     stdio: 'pipe',
     windowsHide: true,
     timeout: 15000,
-    env: {
-      ...process.env,
+    env: buildSanitizedEnv(
+      {
       NODE_PATH: nodeModules,
-    },
+      },
+      [path.dirname(nodePath)],
+    ),
   })
 
   if (probe.error || probe.status !== 0) {
     const stderr = (probe.stderr || '').toString().trim()
     const stdout = (probe.stdout || '').toString().trim()
-    fail(`Bundled Node dependency resolve probe failed for ${nodePath}.\nstdout: ${stdout}\nstderr: ${stderr}`)
+    const errorText =
+      probe.error && (probe.error.stack || probe.error.message) ? probe.error.stack || probe.error.message : ''
+    fail(`Bundled Node dependency resolve probe failed for ${nodePath}.\nstdout: ${stdout}\nstderr: ${stderr}\nerror: ${errorText || '(none)'}`)
   }
 }
 
@@ -941,6 +1174,18 @@ function findBundledChromiumExecutable(browsersRoot) {
 function verifyBundledPlaywrightLaunchProbe() {
   const expected = getExpectedRuntimePaths()
   runPlaywrightLaunchProbe({
+    nodePath: expected.node,
+    browsersRoot: getPlaywrightBrowsersRoot(),
+    mcpCliPath: getPlaywrightMcpCliPath(),
+    label: 'Bundled',
+    nodeAllowedRoot: path.join(runtimeRoot, 'node'),
+    browsersAllowedRoot: path.join(runtimeRoot, 'playwright-browsers'),
+  })
+}
+
+async function verifyBundledPlaywrightMcpToolProbe() {
+  const expected = getExpectedRuntimePaths()
+  await runPlaywrightMcpToolProbe({
     nodePath: expected.node,
     browsersRoot: getPlaywrightBrowsersRoot(),
     mcpCliPath: getPlaywrightMcpCliPath(),
@@ -1406,6 +1651,14 @@ async function verifyPackagedMacApp(appPath, appVersion) {
     nodeAllowedRoot: path.join(packaged.resourcesRoot, 'node'),
     browsersAllowedRoot: path.join(packaged.resourcesRoot, 'playwright-browsers'),
   })
+  await runPlaywrightMcpToolProbe({
+    nodePath: packaged.nodePath,
+    browsersRoot: packaged.browsersRoot,
+    mcpCliPath: packaged.mcpCliPath,
+    label: 'Packaged app',
+    nodeAllowedRoot: path.join(packaged.resourcesRoot, 'node'),
+    browsersAllowedRoot: path.join(packaged.resourcesRoot, 'playwright-browsers'),
+  })
 
   await verifyPackagedBackendStartup(appPath, appVersion)
   const info = getPlaywrightVersionInfo()
@@ -1426,9 +1679,10 @@ async function main() {
     verifyBundledTools()
     verifyMcpLocalEntrypoints()
     verifyBundledPlaywrightLaunchProbe()
+    await verifyBundledPlaywrightMcpToolProbe()
     const info = getPlaywrightVersionInfo()
     console.log(
-      `[verify:runtimes] OK: bundled Python/Node/tools, skill JS dependencies, MCP local entrypoints, and Playwright launch probe are present. Playwright versions: @playwright/mcp=${info.mcp}, playwright=${info.playwright}, playwright-core=${info.playwrightCore}`,
+      `[verify:runtimes] OK: bundled Python/Node/tools, skill JS dependencies, MCP local entrypoints, Playwright launch probe, and Playwright MCP tool probe are present. Playwright versions: @playwright/mcp=${info.mcp}, playwright=${info.playwright}, playwright-core=${info.playwrightCore}`,
     )
   }
 

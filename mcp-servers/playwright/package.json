@@ -12,11 +12,11 @@
   "type": "commonjs",
   "dependencies": {
     "@playwright/mcp": "0.0.68",
-    "playwright": "1.56.0",
-    "playwright-core": "1.56.0"
+    "playwright": "1.59.0-alpha-1771104257000",
+    "playwright-core": "1.59.0-alpha-1771104257000"
   },
   "overrides": {
-    "playwright": "1.56.0",
-    "playwright-core": "1.56.0"
+    "playwright": "1.59.0-alpha-1771104257000",
+    "playwright-core": "1.59.0-alpha-1771104257000"
   }
 }

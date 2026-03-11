@@ -134,6 +134,26 @@ function Get-FileVersionFromPackageJson {
     }
 }
 
+function Get-PackageDependencyVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageJsonPath,
+        [Parameter(Mandatory = $true)][string]$DependencyName
+    )
+    if (-not (Test-Path -LiteralPath $PackageJsonPath)) {
+        return $null
+    }
+    try {
+        $obj = Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json
+        if ($null -ne $obj.dependencies) {
+            return $obj.dependencies.$DependencyName
+        }
+    }
+    catch {
+        return $null
+    }
+    return $null
+}
+
 function Remove-PythonRuntimeNoise {
     param([Parameter(Mandatory = $true)][string]$PythonRoot)
 
@@ -717,6 +737,7 @@ $playwrightTarget = Join-Path $runtimeRoot "playwright-browsers"
 $playwrightCli = Join-Path $repoRoot "mcp-servers\playwright\node_modules\playwright\cli.js"
 $rednotePlaywrightCli = Join-Path $repoRoot "mcp-servers\rednote\node_modules\playwright\cli.js"
 $playwrightPkg = Join-Path $repoRoot "mcp-servers\playwright\node_modules\playwright\package.json"
+$playwrightMcpPkg = Join-Path $repoRoot "mcp-servers\playwright\node_modules\@playwright\mcp\package.json"
 $rednotePlaywrightPkg = Join-Path $repoRoot "mcp-servers\rednote\node_modules\playwright\package.json"
 $openWebsearchNpxDir = Join-Path $repoRoot "mcp-servers\open-websearch\node_modules\npx"
 $nodeExe = Join-Path $nodeTarget "node.exe"
@@ -749,7 +770,12 @@ if (-not (Test-Path -LiteralPath $nodeExe)) {
 }
 
 $playwrightVersion = Get-FileVersionFromPackageJson -PackageJsonPath $playwrightPkg
+$playwrightVersionExpectedByMcp = Get-PackageDependencyVersion -PackageJsonPath $playwrightMcpPkg -DependencyName "playwright"
 $rednoteVersion = Get-FileVersionFromPackageJson -PackageJsonPath $rednotePlaywrightPkg
+
+if ($playwrightVersionExpectedByMcp -and $playwrightVersion -and $playwrightVersionExpectedByMcp -ne $playwrightVersion) {
+    throw "Installed Playwright version mismatch. @playwright/mcp expects $playwrightVersionExpectedByMcp but mcp-servers/playwright installed $playwrightVersion. Reinstall mcp-servers/playwright dependencies before packaging."
+}
 
 Ensure-NodeSkillDependencies -NodeRoot $nodeTarget -NodeExe $nodeExe -PlaywrightVersion $playwrightVersion
 

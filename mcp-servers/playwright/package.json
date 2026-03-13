@@ -1,22 +1,15 @@
 {
   "name": "playwright",
   "version": "1.0.0",
-  "description": "",
-  "main": "stealth.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "private": true,
+  "description": "Local Playwright MCP wrapper using the official config file flow.",
+  "license": "UNLICENSED",
   "type": "commonjs",
-  "dependencies": {
-    "@playwright/mcp": "0.0.68",
-    "playwright": "1.59.0-alpha-1771104257000",
-    "playwright-core": "1.59.0-alpha-1771104257000"
+  "scripts": {
+    "refresh:official": "npm install --save-exact @playwright/mcp@latest",
+    "check:cli": "node node_modules/@playwright/mcp/cli.js --help"
   },
-  "overrides": {
-    "playwright": "1.59.0-alpha-1771104257000",
-    "playwright-core": "1.59.0-alpha-1771104257000"
+  "dependencies": {
+    "@playwright/mcp": "0.0.68"
   }
 }

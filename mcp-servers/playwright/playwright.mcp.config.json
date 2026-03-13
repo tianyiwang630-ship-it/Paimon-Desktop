@@ -1,0 +1,15 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "isolated": false,
+    "launchOptions": {
+      "channel": "chromium"
+    }
+  },
+  "console": {
+    "level": "info"
+  },
+  "snapshot": {
+    "mode": "incremental"
+  }
+}

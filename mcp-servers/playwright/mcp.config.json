@@ -1,12 +1,11 @@
 {
-    "enabled":  true,
-    "type":  "stdio",
-    "command":  "node",
-    "args":  [
-                 "node_modules/@playwright/mcp/cli.js"
-             ],
-    "description":  "Playwright browser automation",
-    "env":  {
-                "PLAYWRIGHT_MCP_BROWSER":  "chromium"
-            }
+  "enabled": true,
+  "type": "stdio",
+  "command": "node",
+  "args": [
+    "node_modules/@playwright/mcp/cli.js",
+    "--config",
+    "playwright.mcp.config.json"
+  ],
+  "description": "Playwright browser automation"
 }

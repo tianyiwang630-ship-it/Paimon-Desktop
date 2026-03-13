@@ -1,14 +1,13 @@
 {
-  "_comment": " MCP Scanner ",
+  "_comment": "MCP Scanner generated-style config kept in repo for stable discovery metadata.",
   "name": "playwright",
   "type": "stdio",
   "command": "node",
   "args": [
-    "node_modules/@playwright/mcp/cli.js"
+    "node_modules/@playwright/mcp/cli.js",
+    "--config",
+    "playwright.mcp.config.json"
   ],
-  "env": {
-    "PLAYWRIGHT_MCP_BROWSER": "chromium"
-  },
   "cwd": "D:\\files\\demo\\desk project-Paimon\\paimon-desk-assistant-mac\\mcp-servers\\playwright",
   "description": "Playwright browser automation",
   "source": "custom"

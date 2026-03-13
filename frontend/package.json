@@ -1,6 +1,6 @@
 {
   "name": "skills-mcp-desktop",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Super Personal Assistant desktop app",
   "main": "dist/main/index.js",
   "scripts": {

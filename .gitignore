@@ -41,6 +41,7 @@ workspace/generated/*
 workspace/temp/*
 !workspace/generated/.gitkeep
 !workspace/temp/.gitkeep
+prev/
 
 # Logs
 *.log

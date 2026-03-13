@@ -1,5 +1,5 @@
 {
-  "_comment": "MCP Scanner generated-style config kept in repo for stable discovery metadata.",
+  "_comment": " MCP Scanner ",
   "name": "playwright",
   "type": "stdio",
   "command": "node",
@@ -8,6 +8,7 @@
     "--config",
     "playwright.mcp.config.json"
   ],
+  "env": {},
   "cwd": "D:\\files\\demo\\desk project-Paimon\\paimon-desk-assistant-mac\\mcp-servers\\playwright",
   "description": "Playwright browser automation",
   "source": "custom"

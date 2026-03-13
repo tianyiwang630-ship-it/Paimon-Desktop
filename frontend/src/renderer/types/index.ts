@@ -79,14 +79,14 @@ export interface ChatResponse {
 // ─── Settings ────────────────────────────────────────────────────────────────
 
 export interface Settings {
-  llm_provider: 'openai' | 'minimax' | 'zhipu' | 'kimi' | null
+  llm_provider: 'openai' | 'minimax' | 'zhipu' | 'kimi' | 'siliconflow' | null
   llm_base_url: string | null
   llm_model_name: string | null
   is_configured: boolean
 }
 
 export interface SettingsUpdate {
-  llm_provider?: 'openai' | 'minimax' | 'zhipu' | 'kimi'
+  llm_provider?: 'openai' | 'minimax' | 'zhipu' | 'kimi' | 'siliconflow'
   llm_base_url?: string
   llm_api_key?: string
   llm_model_name?: string

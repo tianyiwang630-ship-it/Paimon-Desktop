@@ -3,7 +3,8 @@
     "browserName": "chromium",
     "isolated": false,
     "launchOptions": {
-      "channel": "chromium"
+      "channel": "chromium",
+      "headless": false
     }
   },
   "console": {

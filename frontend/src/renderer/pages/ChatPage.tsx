@@ -1722,6 +1722,7 @@ export default function ChatPage() {
                   >
                     <option value="openai">OpenAI</option>
                     <option value="minimax">MiniMax</option>
+                    <option value="siliconflow">SiliconFlow</option>
                     <option value="zhipu">Zhipu</option>
                     <option value="kimi">Kimi</option>
                   </select>

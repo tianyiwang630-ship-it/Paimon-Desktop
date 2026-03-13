@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal
 
 
-ProviderKind = Literal["openai", "minimax", "zhipu", "kimi"]
+ProviderKind = Literal["openai", "minimax", "zhipu", "kimi", "siliconflow"]
 
 
 @dataclass

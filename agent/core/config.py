@@ -34,7 +34,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "minimax")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.minimaxi.com/v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "MiniMax-M2.5")
-SUPPORTED_LLM_PROVIDERS = {"openai", "minimax", "zhipu", "kimi"}
+SUPPORTED_LLM_PROVIDERS = {"openai", "minimax", "zhipu", "kimi", "siliconflow"}
 
 
 def infer_provider_from_base_url(base_url: str | None) -> str:
@@ -54,6 +54,8 @@ def infer_provider_from_base_url(base_url: str | None) -> str:
         return "zhipu"
     if "moonshot" in host or "kimi" in host:
         return "kimi"
+    if "siliconflow" in host:
+        return "siliconflow"
     if "openai" in host:
         return "openai"
     return "openai"

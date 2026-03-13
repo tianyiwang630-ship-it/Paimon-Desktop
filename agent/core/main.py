@@ -784,6 +784,9 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
     def _get_active_provider(self) -> str:
         return self.llm.get_runtime_config().get("provider", "openai")
 
+    def _get_active_model_name(self) -> str:
+        return self.llm.get_runtime_config().get("model_name", "")
+
     def _get_active_provider_adapter(self):
         return get_provider_adapter(self._get_active_provider())
 
@@ -1116,6 +1119,7 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
         """
         sanitized: List[Dict[str, Any]] = []
         active_provider = self._get_active_provider()
+        active_model_name = self._get_active_model_name()
         active_adapter = get_provider_adapter(active_provider)
 
         pending_ids: List[str] = []
@@ -1147,7 +1151,13 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
                 if role == "tool":
                     tcid = msg.get("tool_call_id")
                     if tcid and tcid in pending_ids:
-                        sanitized.append(active_adapter.rebuild_message_for_next_round(msg, active_provider))
+                        sanitized.append(
+                            active_adapter.rebuild_message_for_next_round(
+                                msg,
+                                active_provider,
+                                active_model_name,
+                            )
+                        )
                         seen_ids.add(tcid)
                         if all(tc_id in seen_ids for tc_id in pending_ids):
                             finalize_pending()
@@ -1167,7 +1177,11 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
                     for tc_id in [tc.get("id")]
                     if isinstance(tc_id, str) and tc_id
                 ]
-                rebuilt = active_adapter.rebuild_message_for_next_round(msg, active_provider)
+                rebuilt = active_adapter.rebuild_message_for_next_round(
+                    msg,
+                    active_provider,
+                    active_model_name,
+                )
                 sanitized.append(rebuilt)
                 if tc_ids:
                     pending_ids = tc_ids
@@ -1185,7 +1199,13 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
                 # Skip it for model input.
                 continue
 
-            sanitized.append(active_adapter.rebuild_message_for_next_round(msg, active_provider))
+            sanitized.append(
+                active_adapter.rebuild_message_for_next_round(
+                    msg,
+                    active_provider,
+                    active_model_name,
+                )
+            )
 
         if pending_ids:
             finalize_pending()

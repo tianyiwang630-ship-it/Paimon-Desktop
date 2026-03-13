@@ -154,7 +154,7 @@ class ChatInterruptResponse(BaseModel):
 #  Settings 
 
 class SettingsPatch(BaseModel):
-    llm_provider: Optional[Literal["openai", "minimax", "zhipu", "kimi"]] = None
+    llm_provider: Optional[Literal["openai", "minimax", "zhipu", "kimi", "siliconflow"]] = None
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_model_name: Optional[str] = None

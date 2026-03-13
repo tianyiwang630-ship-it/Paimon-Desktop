@@ -5,8 +5,8 @@ from typing import Dict
 from agent.core.providers.base import BaseProviderAdapter
 
 
-class ZhipuProviderAdapter(BaseProviderAdapter):
-    kind = "zhipu"
+class SiliconFlowProviderAdapter(BaseProviderAdapter):
+    kind = "siliconflow"
 
     def rebuild_message_for_next_round(
         self,

@@ -13,6 +13,7 @@ from agent.core.config import (
     LLM_PROVIDER,
     infer_provider_from_base_url,
 )
+from agent.core.providers.registry import get_provider_adapter
 
 
 class LLMClient:
@@ -92,11 +93,17 @@ class LLMClient:
 
     def generate_with_tools(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         max_tokens: int = LLM_MAX_TOKENS,
     ) -> Any:
         client, config = self._create_client()
+        adapter = get_provider_adapter(config["provider"])
+        adapter.validate_request(
+            messages=messages,
+            tools=tools,
+            model_name=config["model_name"],
+        )
         kwargs = {
             "model": config["model_name"],
             "messages": messages,

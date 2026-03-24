@@ -4,8 +4,13 @@ export interface AppGuideResponse {
   guide: string
 }
 
+export interface SkillCatalogItem {
+  name: string
+  description: string
+}
+
 export interface SkillCatalogResponse {
-  skills: string[]
+  skills: SkillCatalogItem[]
 }
 
 export async function getAppGuide(): Promise<AppGuideResponse> {

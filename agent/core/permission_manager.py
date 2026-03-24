@@ -449,17 +449,9 @@ class PermissionManager:
         print(f"Risk: {risk_level}")
         print("-" * 70)
 
-        if is_delete:
-            print("[A] Allow once")
-            print("[N] Deny")
-            print("[E] Retry with extra instruction")
-        else:
-            print("[A] Allow once")
-            print("[Y] Allow this session")
-            print("[N] Deny")
-            print("[D] Deny this request signature")
-            print("[E] Retry with extra instruction")
-            print("[S] Switch to auto mode")
+        print("[A] Allow once")
+        print("[N] Deny")
+        print("[E] Retry with extra instruction")
 
         while True:
             choice = input("Choice: ").strip().upper()
@@ -477,24 +469,7 @@ class PermissionManager:
                     continue
                 return {"retry_with_context": extra_instruction}
 
-            if is_delete:
-                print("Invalid choice. Use A/N/E.")
-                continue
-
-            if choice == "Y":
-                self.allow_tool_for_session(tool)
-                return True
-
-            if choice == "D":
-                signature = self._get_signature(tool, args or {})
-                self.session_denied.add(signature)
-                return False
-
-            if choice == "S":
-                self.mode = "auto"
-                return True
-
-            print("Invalid choice.")
+            print("Invalid choice. Use A/N/E.")
 
     def _get_risk_level(self, tool: str, args: Dict[str, Any]) -> str:
         if self._is_delete_operation(tool, args):

@@ -118,8 +118,9 @@ export interface PermissionRequest {
 
 export interface PermissionConfirmRequest {
   session_id: string
+  pending_request_id: string
   tool: string
   args: Record<string, any>
-  action: 'allow_once' | 'allow_session' | 'deny' | 'retry_with_context' | 'switch_auto'
+  action: 'allow_once' | 'deny' | 'retry_with_context'
   extra_instruction?: string
 }

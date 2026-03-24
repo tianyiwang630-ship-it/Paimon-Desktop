@@ -2,11 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { useSessionStore } from '../store/session'
 import { useProjectStore } from '../store/project'
-import { extractPermissionRequired, interruptSession, sendMessage, type SendMessageOptions } from '../api/chat'
+import {
+  extractPermissionRequired,
+  interruptSession,
+  sendMessage,
+  waitForRunCompletion,
+  type SendMessageOptions,
+} from '../api/chat'
 import { getSettings, updateSettings } from '../api/settings'
 import { getApiErrorMessage } from '../api/client'
-import { getAppGuide, getSkillCatalog } from '../api/meta'
-import { confirmPermission, setPermissionMode } from '../api/permissions'
+import { getAppGuide, getSkillCatalog, type SkillCatalogItem } from '../api/meta'
+import { confirmPermission, executePendingPermission } from '../api/permissions'
 import type { Message, SettingsUpdate } from '../types'
 import FileManager from '../components/FileManager'
 
@@ -41,13 +47,13 @@ interface TruncateLimits {
 interface SlashPickerOption {
   id: string
   label: string
-  type: 'skill' | 'permission'
+  type: 'skill'
   skillName?: string
-  permissionMode?: 'ask' | 'auto'
 }
 
 interface PendingPermissionRequest {
   sessionId: string
+  pendingRequestId: string
   tool: string
   args: Record<string, any>
   toolCallId?: string | null
@@ -400,9 +406,10 @@ export default function ChatPage() {
   const [guideText, setGuideText] = useState('')
   const [guideLoading, setGuideLoading] = useState(false)
   const [guideError, setGuideError] = useState('')
-  const [skillCatalog, setSkillCatalog] = useState<string[]>(FALLBACK_SKILLS)
+  const [skillCatalog, setSkillCatalog] = useState<SkillCatalogItem[]>(
+    FALLBACK_SKILLS.map((name) => ({ name, description: '' }))
+  )
   const [skillCatalogLoading, setSkillCatalogLoading] = useState(false)
-  const [skillCatalogReady, setSkillCatalogReady] = useState(false)
   const [skillCatalogError, setSkillCatalogError] = useState('')
   const [highlightedSkillIndex, setHighlightedSkillIndex] = useState(0)
   const [pendingPermission, setPendingPermission] = useState<PendingPermissionRequest | null>(null)
@@ -593,12 +600,12 @@ export default function ChatPage() {
 
     const source = Array.isArray(skillCatalog) && skillCatalog.length > 0
       ? skillCatalog
-      : FALLBACK_SKILLS
+      : FALLBACK_SKILLS.map((name) => ({ name, description: '' }))
 
     const normalized = Array.from(
       new Set(
         source
-          .map((name) => String(name || '').trim())
+          .map((item) => String(item?.name || '').trim())
           .filter(Boolean),
       ),
     )
@@ -607,16 +614,6 @@ export default function ChatPage() {
     return normalized.filter((name) => name.toLowerCase().includes(skillQuery))
   }, [shouldShowSkillPicker, skillCatalog, skillQuery])
 
-  const filteredPermissionOptions = useMemo(() => {
-    if (!shouldShowSkillPicker) return [] as SlashPickerOption[]
-    const options: SlashPickerOption[] = [
-      { id: 'perm-ask', label: 'Permission: ask', type: 'permission', permissionMode: 'ask' },
-      { id: 'perm-auto', label: 'Permission: auto', type: 'permission', permissionMode: 'auto' },
-    ]
-    if (!skillQuery) return options
-    return options.filter((option) => option.label.toLowerCase().includes(skillQuery))
-  }, [shouldShowSkillPicker, skillQuery])
-
   const slashOptions = useMemo(() => {
     const skillOptions: SlashPickerOption[] = filteredSkills.map((skillName) => ({
       id: 'skill-' + skillName,
@@ -624,8 +621,8 @@ export default function ChatPage() {
       type: 'skill',
       skillName,
     }))
-    return [...skillOptions, ...filteredPermissionOptions]
-  }, [filteredSkills, filteredPermissionOptions])
+    return skillOptions
+  }, [filteredSkills])
 
   useEffect(() => {
     if (!shouldShowSkillPicker) {
@@ -774,14 +771,17 @@ export default function ChatPage() {
   }, [panelMode, currentSessionId])
 
   useEffect(() => {
-    if (!shouldShowSkillPicker || skillCatalogReady) return
+    if (!shouldShowSkillPicker) return
 
     let canceled = false
     const hardTimeoutId = window.setTimeout(() => {
       if (canceled) return
-      setSkillCatalog((prev) => (Array.isArray(prev) && prev.length > 0 ? prev : FALLBACK_SKILLS))
+      setSkillCatalog((prev) => (
+        Array.isArray(prev) && prev.length > 0
+          ? prev
+          : FALLBACK_SKILLS.map((name) => ({ name, description: '' }))
+      ))
       setSkillCatalogError('Skill catalog request timed out (showing default skills)')
-      setSkillCatalogReady(true)
       setSkillCatalogLoading(false)
     }, 4000)
 
@@ -792,22 +792,26 @@ export default function ChatPage() {
         const data = await getSkillCatalog()
         if (canceled) return
         const normalized = Array.isArray(data.skills)
-          ? data.skills.map((name) => String(name || '').trim()).filter(Boolean)
+          ? data.skills
+              .map((item) => ({
+                name: String(item?.name || '').trim(),
+                description: String(item?.description || '').trim(),
+              }))
+              .filter((item) => Boolean(item.name))
           : []
         if (normalized.length > 0) {
           setSkillCatalog(normalized)
         } else {
-          setSkillCatalog(FALLBACK_SKILLS)
+          setSkillCatalog(FALLBACK_SKILLS.map((name) => ({ name, description: '' })))
           setSkillCatalogError('No skills discovered from backend (showing default skills)')
         }
       } catch (error: any) {
         if (canceled) return
-        setSkillCatalog(FALLBACK_SKILLS)
+        setSkillCatalog(FALLBACK_SKILLS.map((name) => ({ name, description: '' })))
         setSkillCatalogError((error?.message || 'Failed to load skills') + ' (showing default skills)')
       } finally {
         window.clearTimeout(hardTimeoutId)
         if (!canceled) {
-          setSkillCatalogReady(true)
           setSkillCatalogLoading(false)
         }
       }
@@ -818,7 +822,7 @@ export default function ChatPage() {
       canceled = true
       window.clearTimeout(hardTimeoutId)
     }
-  }, [shouldShowSkillPicker, skillCatalogReady])
+  }, [shouldShowSkillPicker])
 
   const syncComposerHeight = () => {
     const el = messageInputRef.current
@@ -941,6 +945,7 @@ export default function ChatPage() {
 
     setPendingPermission({
       sessionId,
+      pendingRequestId: permission.pending_request_id,
       tool: permission.tool,
       args: permission.args || {},
       toolCallId: permission.tool_call_id,
@@ -961,7 +966,7 @@ export default function ChatPage() {
     })
   }
 
-  const runResumeRequest = async (sessionId: string) => {
+  const runPendingPermissionRequest = async (sessionId: string, pendingRequestId: string) => {
     const epoch = nextRequestEpoch(sessionId)
     markPending(sessionId, true)
     clearStatusRetryNotice(sessionId)
@@ -971,22 +976,27 @@ export default function ChatPage() {
     let wasCanceled = false
     let deferredError: any = null
     const requestStartedAtMs = Date.now()
+
     try {
-      await sendMessage(
-        {
-          session_id: sessionId,
-          message: '',
-          project_id: currentProjectId || undefined,
-          resume: true,
-        },
-        controller.signal,
+      const started = await executePendingPermission({
+        session_id: sessionId,
+        pending_request_id: pendingRequestId,
+      })
+
+      setPendingPermission(null)
+      setPermissionNote('')
+
+      await waitForRunCompletion(
+        started.request_id,
+        sessionId,
         buildStatusRetryHandlers(sessionId, epoch),
+        controller.signal,
       )
     } catch (error: any) {
       if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') {
         wasCanceled = true
       } else if (!handlePermissionRequired(sessionId, error)) {
-        console.error('Resume request failed:', error)
+        console.error('Pending permission execution failed:', error)
         deferredError = error
       }
     } finally {
@@ -1294,7 +1304,6 @@ export default function ChatPage() {
     setPanelMode('guide')
     setGuideError('')
     setSettingsSaved(false)
-    if (guideText) return
 
     setGuideLoading(true)
     try {
@@ -1370,47 +1379,19 @@ export default function ChatPage() {
     focusComposerSoon()
   }
 
-  const handleSelectPermissionMode = async (mode: 'ask' | 'auto') => {
-    setInput('')
-    setDraft(currentSessionId, '')
-    setPermissionMessage(`Applying permission mode: ${mode}...`)
-
-    try {
-      let sessionId = currentSessionId
-      if (!sessionId) {
-        const created = await createSession(currentProjectId || null)
-        sessionId = created.id
-        activeSessionIdRef.current = sessionId
-      }
-
-      await setPermissionMode({ session_id: sessionId, mode })
-      setPermissionMessage(`Permission mode set to ${mode} for this session.`)
-    } catch (error: any) {
-      console.error('Failed to switch permission mode:', error)
-      setPermissionMessage(error?.message || 'Failed to switch permission mode')
-    } finally {
-      focusComposerSoon()
-    }
-  }
-
   const handleSelectSlashOption = async (option: SlashPickerOption) => {
     if (option.type === 'skill' && option.skillName) {
       handleSelectSkill(option.skillName)
-      return
-    }
-    if (option.type === 'permission' && option.permissionMode) {
-      await handleSelectPermissionMode(option.permissionMode)
     }
   }
 
   const handleRetrySkillCatalog = () => {
     setSkillCatalogLoading(false)
-    setSkillCatalogReady(false)
     setSkillCatalogError('')
   }
 
   const handlePermissionDecision = async (
-    action: 'allow_once' | 'allow_session' | 'deny' | 'retry_with_context' | 'switch_auto',
+    action: 'allow_once' | 'deny' | 'retry_with_context',
   ) => {
     if (!pendingPermission) return
     if (permissionSubmitting) return
@@ -1424,25 +1405,27 @@ export default function ChatPage() {
     setPermissionMessage('')
 
     try {
-      await confirmPermission({
+      const sessionId = pendingPermission.sessionId
+      const pendingRequestId = pendingPermission.pendingRequestId
+
+      const result = await confirmPermission({
         session_id: pendingPermission.sessionId,
+        pending_request_id: pendingPermission.pendingRequestId,
         tool: pendingPermission.tool,
         args: pendingPermission.args,
         action,
         extra_instruction: action === 'retry_with_context' ? permissionNote.trim() : undefined,
       })
 
-      const sessionId = pendingPermission.sessionId
-      setPendingPermission(null)
-      setPermissionNote('')
-
-      if (action === 'deny') {
+      if (!result.requires_execution) {
+        setPendingPermission(null)
+        setPermissionNote('')
         await loadSessionMessages(sessionId).catch(() => {})
         await loadSessions().catch(() => {})
         return
       }
 
-      await runResumeRequest(sessionId)
+      await runPendingPermissionRequest(sessionId, pendingRequestId)
     } catch (error: any) {
       console.error('Permission confirmation failed:', error)
       setPermissionMessage(error?.message || 'Failed to apply permission decision')
@@ -2088,7 +2071,7 @@ export default function ChatPage() {
                                   : 'text-[var(--app-text)] hover:bg-[var(--app-surface-muted)]'
                               }`}
                             >
-                              {option.type === 'permission' ? `[Permission] ${option.label}` : option.label}
+                              {option.label}
                             </button>
                           ))}
                         </div>
@@ -2192,13 +2175,6 @@ export default function ChatPage() {
               </button>
               <button
                 disabled={permissionSubmitting}
-                onClick={() => void handlePermissionDecision('allow_session')}
-                className="rounded-xl bg-[var(--app-accent)] px-3 py-1.5 text-sm text-white hover:bg-[var(--app-accent-hover)] disabled:bg-gray-400"
-              >
-                Allow this session
-              </button>
-              <button
-                disabled={permissionSubmitting}
                 onClick={() => void handlePermissionDecision('deny')}
                 className="rounded bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700 disabled:bg-gray-400"
               >
@@ -2209,14 +2185,7 @@ export default function ChatPage() {
                 onClick={() => void handlePermissionDecision('retry_with_context')}
                 className="rounded-xl bg-[var(--app-sidebar)] px-3 py-1.5 text-sm text-white hover:bg-[var(--app-sidebar-hover)] disabled:bg-gray-400"
               >
-                Retry with note
-              </button>
-              <button
-                disabled={permissionSubmitting}
-                onClick={() => void handlePermissionDecision('switch_auto')}
-                className="rounded-xl border border-[var(--app-border)] px-3 py-1.5 text-sm text-[var(--app-text)] hover:bg-[var(--app-surface-muted)] disabled:bg-gray-100"
-              >
-                Auto mode
+                Retry with instruction
               </button>
             </div>
           </div>

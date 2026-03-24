@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from fastapi import APIRouter
+import yaml
 
 from agent.core.paths import (
     get_asset_root,
@@ -133,8 +134,43 @@ def _collect_mcp_servers() -> List[Dict[str, str]]:
     return items
 
 
-def _collect_skills() -> List[str]:
-    names: List[str] = []
+def _read_skill_metadata(md_file: Path) -> Dict[str, str]:
+    metadata: Dict[str, str] = {
+        "name": md_file.parent.name,
+        "description": "",
+    }
+
+    try:
+        content = md_file.read_text(encoding="utf-8").lstrip("\ufeff")
+    except Exception:
+        return metadata
+
+    if not content.startswith("---"):
+        return metadata
+
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return metadata
+
+    try:
+        parsed = yaml.safe_load(parts[1]) or {}
+    except Exception:
+        return metadata
+
+    if not isinstance(parsed, dict):
+        return metadata
+
+    name = str(parsed.get("name") or "").strip()
+    description = str(parsed.get("description") or "").strip()
+    if name:
+        metadata["name"] = name
+    if description:
+        metadata["description"] = description
+    return metadata
+
+
+def _collect_skills() -> List[Dict[str, str]]:
+    skills: List[Dict[str, str]] = []
     _log_legacy_runtime_skills()
 
     seen_manifest_paths = set()
@@ -144,27 +180,22 @@ def _collect_skills() -> List[str]:
             continue
         seen_manifest_paths.add(key)
 
-        name = ""
-        try:
-            content = md_file.read_text(encoding="utf-8").lstrip("\ufeff")
-            if content.startswith("---"):
-                parts = content.split("---", 2)
-                if len(parts) >= 3:
-                    for line in parts[1].splitlines():
-                        line = line.strip()
-                        if line.lower().startswith("name:"):
-                            name = line.split(":", 1)[1].strip()
-                            break
-        except Exception:
-            pass
-
+        metadata = _read_skill_metadata(md_file)
+        name = str(metadata.get("name") or "").strip()
         if not name:
-            name = md_file.parent.name
+            continue
 
-        if name:
-            names.append(name)
+        skills.append(
+            {
+                "name": name,
+                "description": str(metadata.get("description") or "").strip(),
+            }
+        )
 
-    return sorted(set(names), key=str.lower)
+    deduped: Dict[str, Dict[str, str]] = {}
+    for item in skills:
+        deduped[item["name"].lower()] = item
+    return sorted(deduped.values(), key=lambda item: item["name"].lower())
 
 
 def _collect_builtin_tools() -> List[str]:
@@ -201,8 +232,12 @@ def _build_guide_text() -> str:
     if not skills:
         lines.append("  (none discovered)")
     else:
-        for name in skills:
-            lines.append(f"  - {name}")
+        for skill in skills:
+            lines.append(f"  - {skill['name']}")
+            description = str(skill.get("description") or "").strip()
+            if description:
+                for line in description.splitlines():
+                    lines.append(f"    {line}")
     lines.append(f"  Total: {len(skills)}")
     lines.append("")
     lines.append("Built-in Tools:")

@@ -123,6 +123,7 @@ class PermissionRequiredPayload(BaseModel):
     tool: str
     args: Dict[str, Any]
     tool_call_id: Optional[str] = None
+    pending_request_id: str
     message: str
 
 
@@ -217,9 +218,10 @@ class UploadConflictsCheckResponse(BaseModel):
 class PermissionConfirmRequest(BaseModel):
     """"""
     session_id: str
+    pending_request_id: str
     tool: str
     args: Dict[str, Any]
-    action: str  # "allow_once", "allow_session", "deny", "retry_with_context", "switch_auto"
+    action: str  # "allow_once", "deny", "retry_with_context"
     extra_instruction: Optional[str] = None
 
 
@@ -227,14 +229,11 @@ class PermissionConfirmResponse(BaseModel):
     """"""
     success: bool
     message: str
+    requires_execution: bool = False
+    pending_request_id: Optional[str] = None
 
-class PermissionModeRequest(BaseModel):
+
+class PermissionExecuteRequest(BaseModel):
     session_id: str
-    mode: str  # "ask" | "auto"
-
-
-class PermissionModeResponse(BaseModel):
-    success: bool
-    mode: str
-    message: str
+    pending_request_id: str
 

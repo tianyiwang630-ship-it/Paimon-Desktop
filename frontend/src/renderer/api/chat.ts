@@ -9,10 +9,11 @@ export interface PermissionRequiredPayload {
   tool: string
   args: Record<string, any>
   tool_call_id?: string | null
+  pending_request_id: string
   message: string
 }
 
-interface ChatStartResponse {
+export interface ChatStartResponse {
   request_id: string
   session_id: string
 }
@@ -55,6 +56,7 @@ function toPermissionDetail(raw: any, fallbackSessionId: string): PermissionRequ
     tool: String(raw?.tool || ''),
     args: raw?.args || {},
     tool_call_id: raw?.tool_call_id ?? null,
+    pending_request_id: String(raw?.pending_request_id || ''),
     message: String(raw?.message || 'Permission confirmation required'),
   }
 }
@@ -143,7 +145,7 @@ export interface SendMessageOptions {
   onStatusRecovered?: (previousConsecutiveFailures: number) => void
 }
 
-async function waitForRunCompletion(
+export async function waitForRunCompletion(
   requestId: string,
   fallbackSessionId: string,
   options?: SendMessageOptions,
@@ -237,6 +239,7 @@ export function extractPermissionRequired(error: any): PermissionRequiredPayload
     tool: detail.tool,
     args: detail.args || {},
     tool_call_id: detail.tool_call_id,
+    pending_request_id: detail.pending_request_id || '',
     message: detail.message || 'Permission confirmation required',
   }
 }

@@ -27,6 +27,8 @@ import json
 import time
 import threading
 import re
+import copy
+import uuid
 from typing import Any, List, Dict, Optional, Literal, cast
 
 try:
@@ -177,6 +179,7 @@ class Agent:
 
         # etry_with_context ?
         self._pending_extra_instruction: str = ""
+        self._pending_tool_request: Optional[Dict[str, Any]] = None
 
         # ==========  ==========
         print("Initializing Agent...")
@@ -475,6 +478,181 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
                 self.db.touch_session(self.session_id, message_count_delta=1)
             self._seed_title_from_user_input(user_input)
 
+        yield from self._run_event_loop(user_input_for_title=user_input)
+
+    def run_locked(self, user_input: str) -> str:
+        """Run single-shot chat with per-session execution lock."""
+        self._execution_lock.acquire()
+        try:
+            return self.run(user_input)
+        finally:
+            self._execution_lock.release()
+
+    def run_events_locked(self, user_input: str, resume: bool = False, user_persisted: bool = False):
+        """Run event-style chat with per-session execution lock."""
+        self._execution_lock.acquire()
+        try:
+            yield from self.run_events(user_input, resume=resume, user_persisted=user_persisted)
+        finally:
+            self._execution_lock.release()
+
+    def run_pending_tool_events_locked(self, pending_request_id: str):
+        """Continue a previously paused tool call after the user confirms it."""
+        self._execution_lock.acquire()
+        try:
+            yield from self.run_pending_tool_events(pending_request_id)
+        finally:
+            self._execution_lock.release()
+
+    def register_pending_tool_request(self, tool: str, args: Dict[str, Any], tool_call_id: Optional[str]) -> Dict[str, Any]:
+        request = {
+            "request_id": uuid.uuid4().hex,
+            "tool": tool,
+            "args": copy.deepcopy(args or {}),
+            "tool_call_id": tool_call_id,
+            "decision_action": None,
+            "decision_extra_instruction": "",
+            "chat_request_id": None,
+            "status": "pending",
+            "created_at": time.time(),
+        }
+        self._pending_tool_request = request
+        return dict(request)
+
+    def get_pending_tool_request(self, pending_request_id: str) -> Optional[Dict[str, Any]]:
+        pending = self._pending_tool_request
+        if not pending:
+            return None
+        if pending.get("request_id") != pending_request_id:
+            return None
+        return dict(pending)
+
+    def record_pending_permission_decision(
+        self,
+        pending_request_id: str,
+        action: str,
+        extra_instruction: str = "",
+    ) -> Dict[str, Any]:
+        pending = self._pending_tool_request
+        if not pending or pending.get("request_id") != pending_request_id:
+            raise KeyError(pending_request_id)
+        pending["decision_action"] = action
+        pending["decision_extra_instruction"] = extra_instruction or ""
+        pending["status"] = "approved"
+        return dict(pending)
+
+    def link_pending_tool_request_task(self, pending_request_id: str, chat_request_id: str) -> Dict[str, Any]:
+        pending = self._pending_tool_request
+        if not pending or pending.get("request_id") != pending_request_id:
+            raise KeyError(pending_request_id)
+        pending["chat_request_id"] = chat_request_id
+        pending["status"] = "executing"
+        return dict(pending)
+
+    def run_pending_tool_events(self, pending_request_id: str):
+        self._refresh_context_budget_if_needed()
+        self._interrupted.clear()
+
+        pending = self._pending_tool_request
+        if not pending or pending.get("request_id") != pending_request_id:
+            raise ValueError("Pending tool request not found")
+
+        action = str(pending.get("decision_action") or "").strip()
+        if not action:
+            raise ValueError("Pending tool request has not been confirmed")
+
+        tool = str(pending.get("tool") or "")
+        tool_args = copy.deepcopy(pending.get("args") or {})
+        tool_call_id = pending.get("tool_call_id")
+        tool_args_json = json.dumps(tool_args, ensure_ascii=False)
+
+        if action == "allow_once":
+            yield {
+                "type": "tool_start",
+                "data": {
+                    "id": tool_call_id,
+                    "name": tool,
+                    "arguments": tool_args_json,
+                },
+            }
+
+            interrupted_tool = False
+            try:
+                result = self._execute_tool_interruptible(tool, tool_args)
+                if isinstance(result, dict) and result.get("_interrupted_tool"):
+                    interrupted_tool = True
+                    result_str = "[interrupted] tool execution canceled by user"
+                else:
+                    result_str = self._format_tool_result(result)
+            except PermissionRequestError as perm_err:
+                pending_req = self.register_pending_tool_request(perm_err.tool, perm_err.tool_args, tool_call_id)
+                yield self._build_permission_request_event(perm_err, tool_call_id, pending_req)
+                return
+            except Exception as exc:
+                result_str = f"[tool execution failed] {str(exc)}"
+
+            result_str = self._format_tool_result(result_str)
+            self._append_tool_result(tool_call_id, result_str)
+            yield {"type": "tool_result", "data": {"id": tool_call_id, "result": result_str}}
+
+            if interrupted_tool or self._interrupted.is_set():
+                pending["status"] = "completed"
+                return
+
+        elif action == "deny":
+            result_str = "[permission denied] User denied this tool call."
+            self._append_tool_result(tool_call_id, result_str)
+            yield {"type": "tool_result", "data": {"id": tool_call_id, "result": result_str}}
+        elif action == "retry_with_context":
+            extra_instruction = str(pending.get("decision_extra_instruction") or "").strip()
+            retry_result = "[retry_with_context] user provided extra instruction; retrying."
+            self._append_tool_result(tool_call_id, retry_result)
+            yield {"type": "tool_result", "data": {"id": tool_call_id, "result": retry_result}}
+            if extra_instruction:
+                extra_msg = {"role": "user", "content": f"[extra instruction] {extra_instruction}"}
+                self.history.append(extra_msg)
+                self.db.add_message(self.session_id, "user", content=extra_msg["content"])
+        else:
+            raise ValueError(f"Unsupported pending permission action: {action}")
+
+        pending["status"] = "completed"
+        yield from self._run_event_loop()
+
+    def interrupt(self):
+        """Interrupt current run/event execution for this agent session."""
+        self._interrupted.set()
+
+    def _build_permission_request_event(
+        self,
+        perm_err: PermissionRequestError,
+        tool_call_id: Optional[str],
+        pending_request: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "type": "permission_request",
+            "data": {
+                "tool": perm_err.tool,
+                "args": perm_err.tool_args,
+                "tool_call_id": tool_call_id,
+                "pending_request_id": pending_request["request_id"],
+            },
+        }
+
+    def _append_tool_result(self, tool_call_id: Optional[str], result_str: str) -> None:
+        tool_msg = {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": result_str,
+        }
+        self.history.append(tool_msg)
+        self.db.add_message(
+            self.session_id,
+            "tool",
+            content=result_str,
+            tool_call_id=tool_call_id,
+        )
+
+    def _run_event_loop(self, user_input_for_title: str = ""):
         final_response_parts = []
         empty_non_tool_rounds = 0
 
@@ -539,37 +717,17 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
                             if isinstance(result, dict) and result.get("_interrupted_tool"):
                                 interrupted_tool = True
                                 result_str = "[interrupted] tool execution canceled by user"
-                            elif isinstance(result, dict):
-                                result_str = self._format_tool_result(result)
                             else:
                                 result_str = self._format_tool_result(result)
                         except PermissionRequestError as perm_err:
-                            yield {
-                                "type": "permission_request",
-                                "data": {
-                                    "tool": perm_err.tool,
-                                    "args": perm_err.tool_args,
-                                    "tool_call_id": tc["id"],
-                                },
-                            }
+                            pending_request = self.register_pending_tool_request(perm_err.tool, perm_err.tool_args, tc["id"])
+                            yield self._build_permission_request_event(perm_err, tc["id"], pending_request)
                             return
-                        except Exception as e:
-                            result_str = f"[tool execution failed] {str(e)}"
+                        except Exception as exc:
+                            result_str = f"[tool execution failed] {str(exc)}"
 
                         result_str = self._format_tool_result(result_str)
-
-                        tool_msg = {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": result_str,
-                        }
-                        self.history.append(tool_msg)
-                        self.db.add_message(
-                            self.session_id,
-                            "tool",
-                            content=result_str,
-                            tool_call_id=tc["id"],
-                        )
+                        self._append_tool_result(tc["id"], result_str)
 
                         yield {
                             "type": "tool_result",
@@ -636,14 +794,8 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
             yield {"type": "done", "data": final_text}
 
         except PermissionRequestError as perm_err:
-            yield {
-                "type": "permission_request",
-                "data": {
-                    "tool": perm_err.tool,
-                    "args": perm_err.tool_args,
-                    "tool_call_id": None,
-                },
-            }
+            pending_request = self.register_pending_tool_request(perm_err.tool, perm_err.tool_args, None)
+            yield self._build_permission_request_event(perm_err, None, pending_request)
 
         except Exception as e:
             err_text = f"[Error] {str(e)}"
@@ -655,28 +807,8 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
                 pass
             yield {"type": "error", "data": str(e)}
 
-        if final_response_parts:
-            self._queue_title_refinement(user_input, "".join(final_response_parts))
-
-    def run_locked(self, user_input: str) -> str:
-        """Run single-shot chat with per-session execution lock."""
-        self._execution_lock.acquire()
-        try:
-            return self.run(user_input)
-        finally:
-            self._execution_lock.release()
-
-    def run_events_locked(self, user_input: str, resume: bool = False, user_persisted: bool = False):
-        """Run event-style chat with per-session execution lock."""
-        self._execution_lock.acquire()
-        try:
-            yield from self.run_events(user_input, resume=resume, user_persisted=user_persisted)
-        finally:
-            self._execution_lock.release()
-
-    def interrupt(self):
-        """Interrupt current run/event execution for this agent session."""
-        self._interrupted.set()
+        if final_response_parts and user_input_for_title:
+            self._queue_title_refinement(user_input_for_title, "".join(final_response_parts))
 
     @staticmethod
     def _sanitize_title_text(text: str, max_len: int = 50) -> str:

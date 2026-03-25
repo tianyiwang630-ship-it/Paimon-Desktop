@@ -61,4 +61,4 @@ git push origin v1.0.9
 ======要覆盖远程仓库
 git fetch origin
 git push origin refs/remotes/origin/main:refs/heads/main-backup-x.x
-git push --force-with-lease origin xxxx:main
+git push --force-with-lease origin main:main

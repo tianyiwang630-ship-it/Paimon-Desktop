@@ -1,9 +1,11 @@
 {
-  "_comment": "MCP category registry. category: core/searchable. alias is optional. Missing entries default to searchable.",
+  "_comment": "MCP category registry. category: core/searchable. use: on/off. alias is optional. Missing entries default to searchable + on.",
   "playwright": {
-    "category": "core"
+    "category": "core",
+    "use": "off"
   },
   "open-websearch": {
-    "category": "core"
+    "category": "core",
+    "use": "on"
   }
 }

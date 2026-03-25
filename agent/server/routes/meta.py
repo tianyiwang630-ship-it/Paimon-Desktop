@@ -15,6 +15,7 @@ from agent.core.paths import (
     get_node_root,
     get_python_root,
 )
+from agent.core.config import DEFAULT_MCP_CATEGORY, DEFAULT_MCP_USE, is_mcp_enabled
 from agent.core.tool_loader import ToolLoader
 
 router = APIRouter(prefix="/api/meta", tags=["meta"])
@@ -123,12 +124,15 @@ def _collect_mcp_servers() -> List[Dict[str, str]]:
             continue
         name = server_dir.name
         entry = registry.get(name, {})
+        enabled = is_mcp_enabled(entry)
         items.append(
             {
                 "name": name,
                 "type": _detect_server_type(server_dir),
-                "category": str(entry.get("category", "searchable")),
+                "category": str(entry.get("category", DEFAULT_MCP_CATEGORY)),
                 "alias": str(entry.get("alias", "")),
+                "use": str(entry.get("use", DEFAULT_MCP_USE)),
+                "enabled": "true" if enabled else "false",
             }
         )
     return items
@@ -225,7 +229,8 @@ def _build_guide_text() -> str:
     else:
         for s in mcp_servers:
             alias = f" ({s['alias']})" if s["alias"] else ""
-            lines.append(f"  - [{s['category']}] {s['name']}{alias} [{s['type']}]")
+            disabled = " (disabled)" if s.get("enabled") == "false" else ""
+            lines.append(f"  - [{s['category']}] {s['name']}{alias}{disabled} [{s['type']}]")
     lines.append(f"  Total: {len(mcp_servers)} ({core_count} core + {searchable_count} searchable)")
     lines.append("")
     lines.append("Skills:")

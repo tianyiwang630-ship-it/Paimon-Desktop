@@ -24,6 +24,13 @@ TIKTOKEN_ENCODING = "cl100k_base"  # Encoding for token counting
 
 # ========== MCP Tool Search ==========
 DEFAULT_MCP_CATEGORY = "searchable"  # Default category for MCP servers not in registry.json
+DEFAULT_MCP_USE = "on"  # Default enablement for MCP servers not in registry.json
+
+
+def is_mcp_enabled(entry: dict | None) -> bool:
+    """Return whether a registry entry should participate in tool loading."""
+    value = str((entry or {}).get("use", DEFAULT_MCP_USE)).strip().lower()
+    return value != "off"
 
 # ========== LLM Configuration ==========
 import os

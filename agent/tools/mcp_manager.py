@@ -24,6 +24,7 @@ except ImportError:
     print("  fastmcp : pip install fastmcp")
 
 from agent.discovery.mcp_scanner import MCPScanner
+from agent.core.config import DEFAULT_MCP_CATEGORY, is_mcp_enabled
 
 
 class MCPManager:
@@ -89,11 +90,19 @@ class MCPManager:
             print(f"  MCP server  {self.servers_dir}/ ")
             return
 
-        self._all_discovered = discovered
+        enabled_discovered = {}
+        for server_name, config in discovered.items():
+            entry = self._registry.get(server_name, {})
+            if not is_mcp_enabled(entry):
+                print(f"   SKIP [disabled] {server_name}")
+                continue
+            enabled_discovered[server_name] = config
+
+        self._all_discovered = enabled_discovered
         self.scanner.save_config(discovered)
 
         print("\n  MCP servers...")
-        for server_name, config in discovered.items():
+        for server_name, config in enabled_discovered.items():
             self._create_client(server_name, config)
 
         self._run_coro(self._connect_all(), timeout=120)
@@ -114,13 +123,18 @@ class MCPManager:
             print("   MCP servers")
             return
 
-        self._all_discovered = discovered
+        enabled_discovered = {}
+        self._all_discovered = enabled_discovered
         self.scanner.save_config(discovered)
 
         core_servers = {}
         for server_name, config in discovered.items():
             entry = self._registry.get(server_name, {})
-            category = entry.get("category", "searchable")
+            if not is_mcp_enabled(entry):
+                print(f"   SKIP [disabled] {server_name}")
+                continue
+            enabled_discovered[server_name] = config
+            category = entry.get("category", DEFAULT_MCP_CATEGORY)
             if category == "core":
                 core_servers[server_name] = config
             else:

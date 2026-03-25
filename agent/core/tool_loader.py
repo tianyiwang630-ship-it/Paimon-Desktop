@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any
 
-from agent.core.config import BASH_TOOL_TIMEOUT, DEFAULT_MCP_CATEGORY
+from agent.core.config import BASH_TOOL_TIMEOUT, DEFAULT_MCP_CATEGORY, is_mcp_enabled
 from agent.core.bm25 import BM25Index
 from agent.core.paths import (
     get_asset_root,
@@ -142,6 +142,9 @@ class ToolLoader:
 
             for server_name, server_info in servers.items():
                 entry = registry.get(server_name, {})
+                if not is_mcp_enabled(entry):
+                    print(f"   SKIP [disabled] {server_name}")
+                    continue
                 category = entry.get('category', DEFAULT_MCP_CATEGORY)
                 alias = entry.get('alias', '')
                 tools = server_info.get('tools', [])

@@ -127,7 +127,7 @@ class PermissionRequiredPayload(BaseModel):
     message: str
 
 
-ChatRunStatus = Literal["running", "success", "error", "permission_required", "interrupted"]
+ChatRunStatus = Literal["running", "recovering", "success", "failed", "permission_required", "interrupted"]
 
 
 class ChatStatusResponse(BaseModel):

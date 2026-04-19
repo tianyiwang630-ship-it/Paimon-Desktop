@@ -18,6 +18,10 @@ LLM_MAX_TOKENS = 20000  # Default max tokens for LLM generation
 LLM_SUMMARY_MAX_TOKENS = 4000  # Max tokens for compression summary
 LLM_HTTP_TIMEOUT_SECONDS = 180.0  # End-to-end timeout per LLM request
 LLM_HTTP_CONNECT_TIMEOUT_SECONDS = 20.0  # Connect timeout for LLM HTTP calls
+LLM_TIMEOUT_RETRY_PER_ROUND = 2  # Max timeout retries within one LLM round
+LLM_TIMEOUT_RETRY_TOTAL = 4  # Max timeout retries across one request
+TOOL_PROTOCOL_RETRY_TOTAL = 2  # Max repair retries for textual tool-call failures
+RECOVERY_TOTAL_TIME_BUDGET_MINUTES = 30  # Max total time spent on automatic recovery
 
 # ========== Encoding ==========
 TIKTOKEN_ENCODING = "cl100k_base"  # Encoding for token counting

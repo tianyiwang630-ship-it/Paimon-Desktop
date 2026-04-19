@@ -46,6 +46,14 @@ from agent.core.providers.base import detect_protocol_flags
 from agent.core.providers.normalizer import normalize_assistant_message
 from agent.core.providers.registry import get_provider_adapter
 from agent.core.providers.types import NormalizedAssistantTurn, NormalizedToolCall
+from agent.core.recovery import (
+    RecoveryBudgetConfig,
+    RecoveryState,
+    build_recovery_prompt,
+    classify_exception,
+    classify_turn,
+    decide_recovery,
+)
 from agent.core.config import (
     MAX_CONTEXT_TOKENS, KEEP_RECENT_TURNS, MAX_TOOL_RESULT_CHARS
 )
@@ -655,15 +663,82 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
     def _run_event_loop(self, user_input_for_title: str = ""):
         final_response_parts = []
         empty_non_tool_rounds = 0
+        recovery_state = RecoveryState(started_at_monotonic=time.monotonic())
+        recovery_budgets = RecoveryBudgetConfig()
 
         try:
             for _ in range(self.max_turns):
                 if self._interrupted.is_set():
                     break
 
+                recovery_state.begin_round()
                 self._refresh_context_budget_if_needed()
-                messages = self._build_messages()
-                turn = self._call_llm_interruptible(messages)
+                base_messages = self._build_messages()
+                current_messages = base_messages
+                turn = None
+
+                while True:
+                    try:
+                        turn = self._call_llm_interruptible(current_messages)
+                    except Exception as exc:
+                        issue = classify_exception(exc)
+                        if issue is None:
+                            raise
+                        decision = decide_recovery(
+                            issue,
+                            recovery_state,
+                            recovery_budgets,
+                            now_monotonic=time.monotonic(),
+                        )
+                        if decision.action != "retry_llm":
+                            raise RuntimeError(decision.message) from exc
+                        recovery_state.record_retry(issue)
+                        yield {
+                            "type": "recovery",
+                            "data": {
+                                "category": issue.category,
+                                "message": decision.message,
+                            },
+                        }
+                        continue
+
+                    if turn is None:
+                        break
+
+                    turn_issue = classify_turn(turn)
+                    if turn_issue is not None:
+                        self._persist_assistant_turn(turn)
+                        decision = decide_recovery(
+                            turn_issue,
+                            recovery_state,
+                            recovery_budgets,
+                            now_monotonic=time.monotonic(),
+                        )
+                        if decision.action != "retry_with_repair_prompt":
+                            raise RuntimeError(decision.message)
+                        recovery_state.record_retry(turn_issue)
+                        yield {
+                            "type": "recovery",
+                            "data": {
+                                "category": turn_issue.category,
+                                "message": decision.message,
+                            },
+                        }
+                        current_messages = list(base_messages)
+                        current_messages.append(
+                            {
+                                "role": "assistant",
+                                "content": turn.raw_content or turn.visible_content or "",
+                            }
+                        )
+                        current_messages.append(
+                            {
+                                "role": "user",
+                                "content": build_recovery_prompt(turn_issue, turn=turn),
+                            }
+                        )
+                        continue
+                    break
 
                 if turn is None:
                     break

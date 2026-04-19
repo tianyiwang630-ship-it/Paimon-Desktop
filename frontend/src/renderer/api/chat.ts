@@ -2,6 +2,7 @@ import axios from 'axios'
 
 import { apiClient } from './client'
 import type { ChatRequest, ChatResponse } from '../types'
+import { isActiveChatRunStatus, normalizeChatRunStatus, type ChatRunStatus } from '../utils/chatRecovery'
 
 export interface PermissionRequiredPayload {
   code: 'permission_required'
@@ -17,8 +18,6 @@ export interface ChatStartResponse {
   request_id: string
   session_id: string
 }
-
-type ChatRunStatus = 'running' | 'success' | 'error' | 'permission_required' | 'interrupted'
 
 interface ChatStatusResponse {
   request_id: string
@@ -143,6 +142,7 @@ function getStatusPollRetryDelayMs(consecutiveFailures: number): number {
 export interface SendMessageOptions {
   onStatusRetrying?: (consecutiveFailures: number, error: any) => void
   onStatusRecovered?: (previousConsecutiveFailures: number) => void
+  onRunStatusChange?: (status: ChatRunStatus, response?: string | null) => void
 }
 
 export async function waitForRunCompletion(
@@ -179,7 +179,8 @@ export async function waitForRunCompletion(
       consecutiveFailures = 0
     }
 
-    const status = String(response?.data?.status || 'error') as ChatRunStatus
+    const status = normalizeChatRunStatus(response?.data?.status)
+    options?.onRunStatusChange?.(status, response?.data?.response || null)
     if (status === 'success' || status === 'interrupted') {
       return toChatResponse(response.data, fallbackSessionId)
     }
@@ -189,12 +190,17 @@ export async function waitForRunCompletion(
       throwPermissionRequired(detail)
     }
 
-    if (status === 'error') {
+    if (status === 'failed') {
       const message = String(response?.data?.error || 'Chat request failed')
       throw new Error(message)
     }
 
-    await sleepWithAbort(CHAT_STATUS_POLL_INTERVAL_MS, signal)
+    if (isActiveChatRunStatus(status)) {
+      await sleepWithAbort(CHAT_STATUS_POLL_INTERVAL_MS, signal)
+      continue
+    }
+
+    throw new Error(`Unsupported chat status: ${status}`)
   }
 }
 

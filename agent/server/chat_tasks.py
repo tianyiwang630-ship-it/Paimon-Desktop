@@ -7,8 +7,9 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
+from agent.server.chat_run_state import build_progress_update, is_active_status, normalize_final_status
 from agent.server.models import ChatRequest, ChatStatusResponse, PermissionRequiredPayload
 
 
@@ -59,7 +60,12 @@ def build_permission_required_detail(session_id: str, event_data: Dict[str, Any]
     }
 
 
-def _consume_agent_events(session_id: str, event_iter: Iterable[Dict[str, Any]], agent_history) -> ChatExecutionResult:
+def _consume_agent_events(
+    session_id: str,
+    event_iter: Iterable[Dict[str, Any]],
+    agent_history,
+    progress_callback: Optional[Callable[[Any], None]] = None,
+) -> ChatExecutionResult:
     final_response: Optional[str] = None
     tool_calls_count = 0
     permission_detail: Optional[Dict[str, Any]] = None
@@ -78,10 +84,16 @@ def _consume_agent_events(session_id: str, event_iter: Iterable[Dict[str, Any]],
                 permission_detail = build_permission_required_detail(session_id, event_data or {})
                 break
 
+            progress_update = build_progress_update(str(event_type or ""), event_data)
+            if progress_update is not None:
+                if progress_callback is not None:
+                    progress_callback(progress_update)
+                continue
+
             if event_type == "error":
                 return ChatExecutionResult(
                     session_id=session_id,
-                    status="error",
+                    status="failed",
                     error=str(event_data or "Agent execution failed"),
                     tool_calls_count=tool_calls_count,
                 )
@@ -92,7 +104,7 @@ def _consume_agent_events(session_id: str, event_iter: Iterable[Dict[str, Any]],
     except Exception as exc:
         return ChatExecutionResult(
             session_id=session_id,
-            status="error",
+            status="failed",
             error=str(exc),
             tool_calls_count=tool_calls_count,
         )
@@ -133,13 +145,17 @@ def _consume_agent_events(session_id: str, event_iter: Iterable[Dict[str, Any]],
     )
 
 
-def execute_chat_request(agent_manager, body: ChatRequest) -> ChatExecutionResult:
+def execute_chat_request(
+    agent_manager,
+    body: ChatRequest,
+    progress_callback: Optional[Callable[[Any], None]] = None,
+) -> ChatExecutionResult:
     try:
         agent = agent_manager.get_or_create(body.session_id, project_id=body.project_id)
     except Exception as exc:
         return ChatExecutionResult(
             session_id=body.session_id,
-            status="error",
+            status="failed",
             error=f"Agent creation failed: {exc}",
         )
 
@@ -150,7 +166,12 @@ def execute_chat_request(agent_manager, body: ChatRequest) -> ChatExecutionResul
             resume=body.resume,
             user_persisted=False,
         )
-        return _consume_agent_events(body.session_id, event_iter, agent.history)
+        return _consume_agent_events(
+            body.session_id,
+            event_iter,
+            agent.history,
+            progress_callback=progress_callback,
+        )
     finally:
         if event_iter is not None:
             try:
@@ -159,27 +180,37 @@ def execute_chat_request(agent_manager, body: ChatRequest) -> ChatExecutionResul
                 pass
 
 
-def execute_pending_permission_request(agent_manager, session_id: str, pending_request_id: str) -> ChatExecutionResult:
+def execute_pending_permission_request(
+    agent_manager,
+    session_id: str,
+    pending_request_id: str,
+    progress_callback: Optional[Callable[[Any], None]] = None,
+) -> ChatExecutionResult:
     try:
         agent = agent_manager.get_agent(session_id)
     except Exception as exc:
         return ChatExecutionResult(
             session_id=session_id,
-            status="error",
+            status="failed",
             error=f"Agent lookup failed: {exc}",
         )
 
     if not agent:
         return ChatExecutionResult(
             session_id=session_id,
-            status="error",
+            status="failed",
             error="Session is not active",
         )
 
     event_iter = None
     try:
         event_iter = agent.run_pending_tool_events_locked(pending_request_id)
-        return _consume_agent_events(session_id, event_iter, agent.history)
+        return _consume_agent_events(
+            session_id,
+            event_iter,
+            agent.history,
+            progress_callback=progress_callback,
+        )
     finally:
         if event_iter is not None:
             try:
@@ -211,7 +242,7 @@ class ChatTaskManager:
             running_id = self._running_by_session.get(body.session_id)
             if running_id:
                 existing = self._tasks.get(running_id)
-                if existing and existing.status == "running":
+                if existing and is_active_status(existing.status):
                     raise RuntimeError("Session already has an active chat request")
                 self._running_by_session.pop(body.session_id, None)
 
@@ -244,7 +275,7 @@ class ChatTaskManager:
             running_id = self._running_by_session.get(session_id)
             if running_id:
                 existing = self._tasks.get(running_id)
-                if existing and existing.status == "running":
+                if existing and is_active_status(existing.status):
                     raise RuntimeError("Session already has an active chat request")
                 self._running_by_session.pop(session_id, None)
 
@@ -327,11 +358,20 @@ class ChatTaskManager:
         self._cleanup_thread.join(timeout=5)
 
     def _run_task(self, request_id: str, body: ChatRequest) -> None:
-        result = execute_chat_request(self._agent_manager, body)
+        result = execute_chat_request(
+            self._agent_manager,
+            body,
+            progress_callback=lambda update: self._apply_progress_update(request_id, update),
+        )
         self._finalize_task_result(request_id, result)
 
     def _run_pending_permission_task(self, request_id: str, session_id: str, pending_request_id: str) -> None:
-        result = execute_pending_permission_request(self._agent_manager, session_id, pending_request_id)
+        result = execute_pending_permission_request(
+            self._agent_manager,
+            session_id,
+            pending_request_id,
+            progress_callback=lambda update: self._apply_progress_update(request_id, update),
+        )
         self._finalize_task_result(request_id, result)
 
     def _finalize_task_result(self, request_id: str, result: ChatExecutionResult) -> None:
@@ -342,7 +382,7 @@ class ChatTaskManager:
             if record is None:
                 return
 
-            final_status = result.status
+            final_status = normalize_final_status(result.status)
             if record.interrupt_requested and final_status == "success":
                 final_status = "interrupted"
                 if not _is_interrupted_text(result.response):
@@ -360,6 +400,19 @@ class ChatTaskManager:
             if active_request_id == request_id:
                 self._running_by_session.pop(record.session_id, None)
 
+    def _apply_progress_update(self, request_id: str, update) -> None:
+        now_iso = _utc_now_iso()
+        with self._lock:
+            record = self._tasks.get(request_id)
+            if record is None:
+                return
+            if not is_active_status(record.status):
+                return
+            record.status = str(update.status or "recovering")
+            record.response = update.response
+            record.error = update.error
+            record.updated_at = now_iso
+
     def _cleanup_loop(self) -> None:
         while not self._stop_event.wait(timeout=self._cleanup_interval_seconds):
             self._cleanup_finished_tasks()
@@ -370,7 +423,7 @@ class ChatTaskManager:
             expired_ids = [
                 request_id
                 for request_id, record in self._tasks.items()
-                if record.status != "running"
+                if not is_active_status(record.status)
                 and record.finished_at_monotonic is not None
                 and record.finished_at_monotonic < cutoff
             ]

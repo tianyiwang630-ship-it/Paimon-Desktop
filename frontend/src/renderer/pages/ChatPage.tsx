@@ -15,6 +15,7 @@ import { getAppGuide, getSkillCatalog, type SkillCatalogItem } from '../api/meta
 import { confirmPermission, executePendingPermission } from '../api/permissions'
 import type { Message, SettingsUpdate } from '../types'
 import FileManager from '../components/FileManager'
+import { getRecoveryNotice, normalizeChatRunStatus, type ChatRunStatus } from '../utils/chatRecovery'
 
 interface RenderMessage {
   key: string
@@ -106,7 +107,8 @@ function parseIsoTimestamp(value: string | undefined): number | null {
 function isFinalAssistantMessage(message: Message): boolean {
   if (message.role !== 'assistant') return false
   const hasToolCalls = Array.isArray((message as any).tool_calls) && (message as any).tool_calls.length > 0
-  return !hasToolCalls
+  const protocolFlags = Array.isArray((message as any).protocol_flags) ? (message as any).protocol_flags : []
+  return !hasToolCalls && !protocolFlags.includes('fake_textual_tool_call')
 }
 
 function hasFinalAssistantSince(messages: Message[], sinceMs: number): boolean {
@@ -141,7 +143,7 @@ function hasFinalAssistantSince(messages: Message[], sinceMs: number): boolean {
 
 function isRequestTimeoutError(error: any): boolean {
   const message = String(error?.message || '').toLowerCase()
-  return error?.code === 'ECONNABORTED' || message.includes('timeout of ')
+  return error?.code === 'ECONNABORTED' || message.includes('timeout of ') || message.includes('timed out')
 }
 
 function truncatePreview(
@@ -288,9 +290,6 @@ function parseTurns(messages: Message[]): ParsedTurn[] {
           role: 'assistant',
           content: '[warning] Provider returned a textual tool call; no real tool execution was recorded.',
         })
-        activeTurn.finalAssistant =
-          'Provider returned a textual tool call. Open intermediate steps to inspect the raw response.'
-        activeTurn.finalAssistantRaw = (raw || '').trim() || assistantText
       } else {
         if (activeTurn.finalAssistant) {
           activeTurn.details.push({
@@ -430,6 +429,7 @@ export default function ChatPage() {
   const [assistantViewModes, setAssistantViewModes] = useState<Record<string, AssistantViewMode>>({})
   const [composerExpanded, setComposerExpanded] = useState(false)
   const [statusRetryNoticeBySession, setStatusRetryNoticeBySession] = useState<Record<string, string>>({})
+  const [runStatusBySession, setRunStatusBySession] = useState<Record<string, ChatRunStatus>>({})
 
   const activeSessionIdRef = useRef<string | null>(null)
   const inFlightSessionsRef = useRef<Set<string>>(new Set())
@@ -572,6 +572,7 @@ export default function ChatPage() {
 
   const currentPending = currentSessionId ? pendingSessions.has(currentSessionId) : false
   const currentStatusRetryNotice = currentSessionId ? statusRetryNoticeBySession[currentSessionId] || '' : ''
+  const currentRunStatus = currentSessionId ? normalizeChatRunStatus(runStatusBySession[currentSessionId] || 'running') : 'running'
   const parsedTurns = useMemo(
     () => parseTurns((currentMessages as Message[]) || []),
     [currentMessages],
@@ -862,9 +863,16 @@ export default function ChatPage() {
     if (pending) {
       inFlightSessionsRef.current.add(sessionId)
       pendingSinceRef.current.set(sessionId, Date.now())
+      setRunStatusBySession((prev) => ({ ...prev, [sessionId]: 'running' }))
     } else {
       inFlightSessionsRef.current.delete(sessionId)
       pendingSinceRef.current.delete(sessionId)
+      setRunStatusBySession((prev) => {
+        if (!(sessionId in prev)) return prev
+        const next = { ...prev }
+        delete next[sessionId]
+        return next
+      })
     }
 
     setPendingSessions((prev) => {
@@ -895,6 +903,12 @@ export default function ChatPage() {
       return next
     })
     setStatusRetryNoticeBySession((prev) => {
+      if (!(sessionId in prev)) return prev
+      const next = { ...prev }
+      delete next[sessionId]
+      return next
+    })
+    setRunStatusBySession((prev) => {
       if (!(sessionId in prev)) return prev
       const next = { ...prev }
       delete next[sessionId]
@@ -936,6 +950,19 @@ export default function ChatPage() {
     onStatusRecovered: () => {
       if (!isRequestCurrent(sessionId, epoch)) return
       clearStatusRetryNotice(sessionId)
+    },
+    onRunStatusChange: (status, response) => {
+      if (!isRequestCurrent(sessionId, epoch)) return
+      setRunStatusBySession((prev) => {
+        if (prev[sessionId] === status) return prev
+        return { ...prev, [sessionId]: status }
+      })
+      const recoveryNotice = getRecoveryNotice(status, response)
+      if (recoveryNotice) {
+        setStatusRetryNotice(sessionId, recoveryNotice)
+      } else if (!statusRetryNoticeBySession[sessionId] || statusRetryNoticeBySession[sessionId] !== STATUS_RETRY_WEAK_NOTICE) {
+        clearStatusRetryNotice(sessionId)
+      }
     },
   })
 
@@ -1861,7 +1888,7 @@ export default function ChatPage() {
                           style={{ animationDelay: '300ms' }}
                         />
                       </div>
-                      <span className="text-sm">Running...</span>
+                      <span className="text-sm">{currentRunStatus === 'recovering' ? 'Recovering...' : 'Running...'}</span>
                     </div>
                     {currentStatusRetryNotice && (
                       <div className="mt-2 text-xs text-[var(--app-text-muted)]">{currentStatusRetryNotice}</div>

@@ -133,7 +133,7 @@ This applies to ALL calculations - totals, percentages, ratios, differences, etc
 4. **Save**: Write to file
 5. **Recalculate formulas (MANDATORY IF USING FORMULAS)**: Use the recalc.py script
    ```bash
-   python recalc.py output.xlsx
+   /path/to/python.exe recalc.py output.xlsx
    ```
 6. **Verify and fix any errors**: 
    - The script returns JSON with error details
@@ -206,7 +206,7 @@ wb.save('modified.xlsx')
 Excel files created or modified by openpyxl contain formulas as strings but not calculated values. Use the provided `recalc.py` script to recalculate formulas:
 
 ```bash
-python recalc.py <excel_file> [timeout_seconds]
+/path/to/python.exe recalc.py <excel_file> [timeout_seconds]
 ```
 
 Example:
@@ -219,7 +219,7 @@ The script:
 - Recalculates all formulas in all sheets
 - Scans ALL cells for Excel errors (#REF!, #DIV/0!, etc.)
 - Returns JSON with detailed error locations and counts
-- Works on both Linux and macOS
+- Works on Linux, macOS, and Windows
 
 ## Formula Verification Checklist
 
@@ -258,6 +258,10 @@ The script returns JSON with error details:
   }
 }
 ```
+
+## Troubleshooting
+
+遇到 openpyxl 相关报错时，请查阅 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) 获取常见问题与解决方案。
 
 ## Best Practices
 

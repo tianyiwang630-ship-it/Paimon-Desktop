@@ -12,13 +12,23 @@ from agent.server.models import (
 router = APIRouter(prefix="/api/permissions", tags=["permissions"])
 
 
+def _permission_expired_error() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "permission_expired",
+            "message": "Permission request expired",
+        },
+    )
+
+
 @router.post("/confirm", response_model=PermissionConfirmResponse)
 async def confirm_permission(body: PermissionConfirmRequest, request: Request):
     agent_manager = request.app.state.agent_manager
     agent = agent_manager.get_agent(body.session_id)
 
     if not agent:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise _permission_expired_error()
 
     if not agent.tool_loader.permission_manager:
         raise HTTPException(status_code=400, detail="Permission manager not enabled")
@@ -26,7 +36,7 @@ async def confirm_permission(body: PermissionConfirmRequest, request: Request):
     pm = agent.tool_loader.permission_manager
     pending = agent.get_pending_tool_request(body.pending_request_id)
     if not pending:
-        raise HTTPException(status_code=404, detail="Pending permission request not found")
+        raise _permission_expired_error()
 
     if pending.get("tool") != body.tool or (pending.get("args") or {}) != (body.args or {}):
         raise HTTPException(status_code=409, detail="Pending permission request no longer matches tool payload")
@@ -76,11 +86,11 @@ async def execute_pending_permission(body: PermissionExecuteRequest, request: Re
     agent = agent_manager.get_agent(body.session_id)
 
     if not agent:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise _permission_expired_error()
 
     pending = agent.get_pending_tool_request(body.pending_request_id)
     if not pending:
-        raise HTTPException(status_code=404, detail="Pending permission request not found")
+        raise _permission_expired_error()
 
     if not pending.get("decision_action"):
         raise HTTPException(status_code=409, detail="Pending permission request has not been confirmed")

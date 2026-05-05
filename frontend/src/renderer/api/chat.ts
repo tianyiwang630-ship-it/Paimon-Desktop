@@ -1,6 +1,7 @@
 import axios from 'axios'
 
 import { apiClient } from './client'
+import { logChatDebug, serializeChatDebugError, summarizeText } from './chatDebug'
 import type { ChatRequest, ChatResponse } from '../types'
 import { isActiveChatRunStatus, normalizeChatRunStatus, type ChatRunStatus } from '../utils/chatRecovery'
 
@@ -157,13 +158,25 @@ export async function waitForRunCompletion(
     throwIfAborted(signal)
 
     let response
+    const pollStartedAtMs = Date.now()
     try {
+      logChatDebug('chat_status_poll_start', {
+        session_id: fallbackSessionId,
+        request_id: requestId,
+      })
       response = await apiClient.get<ChatStatusResponse>(`/chat/status/${requestId}`, {
         signal,
         timeout: CHAT_STATUS_FETCH_TIMEOUT_MS,
       })
     } catch (error: any) {
       throwIfAborted(signal)
+      logChatDebug('chat_status_poll_error', {
+        session_id: fallbackSessionId,
+        request_id: requestId,
+        duration_ms: Date.now() - pollStartedAtMs,
+        http_status: error?.response?.status,
+        error: serializeChatDebugError(error),
+      })
       if (!isRetryableStatusFetchError(error)) {
         throw error
       }
@@ -180,6 +193,18 @@ export async function waitForRunCompletion(
     }
 
     const status = normalizeChatRunStatus(response?.data?.status)
+    logChatDebug('chat_status_poll_success', {
+      session_id: response?.data?.session_id || fallbackSessionId,
+      request_id: requestId,
+      duration_ms: Date.now() - pollStartedAtMs,
+      http_status: response?.status,
+      data: {
+        status,
+        elapsed_ms: response?.data?.elapsed_ms,
+        has_response: Boolean(response?.data?.response),
+        has_error: Boolean(response?.data?.error),
+      },
+    })
     options?.onRunStatusChange?.(status, response?.data?.response || null)
     if (status === 'success' || status === 'interrupted') {
       return toChatResponse(response.data, fallbackSessionId)
@@ -210,25 +235,89 @@ export async function sendMessage(
   signal?: AbortSignal,
   options?: SendMessageOptions,
 ): Promise<ChatResponse> {
+  const startedAtMs = Date.now()
+  logChatDebug('chat_send_start', {
+    session_id: data.session_id,
+    project_id: data.project_id,
+    data: {
+      resume: data.resume,
+      message: summarizeText(data.message),
+    },
+  })
   try {
+    const startRequestAtMs = Date.now()
+    logChatDebug('chat_start_request_start', {
+      session_id: data.session_id,
+      project_id: data.project_id,
+    })
     const startResponse = await apiClient.post<ChatStartResponse>('/chat/start', data, {
       timeout: CHAT_START_TIMEOUT_MS,
       signal,
+    })
+    logChatDebug('chat_start_request_success', {
+      session_id: data.session_id,
+      project_id: data.project_id,
+      request_id: startResponse?.data?.request_id,
+      duration_ms: Date.now() - startRequestAtMs,
+      http_status: startResponse?.status,
     })
     const requestId = String(startResponse?.data?.request_id || '')
     if (!requestId) {
       throw new Error('Missing request id from /chat/start')
     }
-    return await waitForRunCompletion(requestId, data.session_id, options, signal)
+    const result = await waitForRunCompletion(requestId, data.session_id, options, signal)
+    logChatDebug('chat_send_success', {
+      session_id: result.session_id || data.session_id,
+      project_id: data.project_id,
+      request_id: requestId,
+      duration_ms: Date.now() - startedAtMs,
+      data: {
+        tool_calls_count: result.tool_calls_count,
+        response: summarizeText(result.response),
+      },
+    })
+    return result
   } catch (error: any) {
     // Backward compatibility with servers that only support /chat.
     if (isEndpointMissing(error)) {
-      const response = await apiClient.post<ChatResponse>('/chat', data, {
-        timeout: 0,
-        signal,
+      logChatDebug('chat_start_endpoint_missing_fallback', {
+        session_id: data.session_id,
+        project_id: data.project_id,
+        duration_ms: Date.now() - startedAtMs,
+        http_status: error?.response?.status,
+        error: serializeChatDebugError(error),
       })
-      return response.data
+      const fallbackStartedAtMs = Date.now()
+      try {
+        const response = await apiClient.post<ChatResponse>('/chat', data, {
+          timeout: 0,
+          signal,
+        })
+        logChatDebug('chat_legacy_fallback_success', {
+          session_id: response?.data?.session_id || data.session_id,
+          project_id: data.project_id,
+          duration_ms: Date.now() - fallbackStartedAtMs,
+          http_status: response?.status,
+        })
+        return response.data
+      } catch (fallbackError: any) {
+        logChatDebug('chat_legacy_fallback_error', {
+          session_id: data.session_id,
+          project_id: data.project_id,
+          duration_ms: Date.now() - fallbackStartedAtMs,
+          http_status: fallbackError?.response?.status,
+          error: serializeChatDebugError(fallbackError),
+        })
+        throw fallbackError
+      }
     }
+    logChatDebug('chat_send_error', {
+      session_id: data.session_id,
+      project_id: data.project_id,
+      duration_ms: Date.now() - startedAtMs,
+      http_status: error?.response?.status,
+      error: serializeChatDebugError(error),
+    })
     throw error
   }
 }

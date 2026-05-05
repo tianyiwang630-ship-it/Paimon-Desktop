@@ -1,13 +1,18 @@
 import asyncio
 import sys
+import time
 import types
 from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
 
 
 if "openai" not in sys.modules:
     sys.modules["openai"] = types.SimpleNamespace(OpenAI=object)
 
 from agent.server.chat_tasks import execute_chat_request, execute_pending_permission_request
+from agent.server.agent_manager import AgentManager
 from agent.server.models import ChatRequest
 from agent.server.routes import permissions
 
@@ -52,8 +57,10 @@ class _AgentStub:
             "tool_call_id": "tool-1",
             "decision_action": None,
             "decision_extra_instruction": "",
+            "created_at": time.time(),
         }
         self.recorded_decisions = []
+        self.active_pending_permission = False
 
     def run_events_locked(self, user_input, resume=False, user_persisted=False):
         return _EventIterator(
@@ -92,6 +99,9 @@ class _AgentStub:
             raise KeyError(pending_request_id)
         self.pending["chat_request_id"] = chat_request_id
         return dict(self.pending)
+
+    def has_active_pending_permission(self):
+        return self.active_pending_permission
 
 
 class _AgentManagerStub:
@@ -189,3 +199,51 @@ def test_permission_routes_confirm_then_execute_pending_request():
     assert execute_response.request_id == "task-1"
     assert execute_response.session_id == "session-1"
     assert chat_task_manager.calls == [("session-1", "pending-1")]
+
+
+def test_permission_confirm_missing_pending_request_returns_expired_code():
+    agent = _AgentStub()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                agent_manager=_AgentManagerStub(agent),
+                chat_task_manager=_ChatTaskManagerStub(),
+            )
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            permissions.confirm_permission(
+                SimpleNamespace(
+                    session_id="session-1",
+                    pending_request_id="missing-pending",
+                    tool="bash",
+                    args={"command": 'rm -rf "temp/agent-loop"'},
+                    action="allow_once",
+                    extra_instruction=None,
+                ),
+                request,
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "permission_expired",
+        "message": "Permission request expired",
+    }
+
+
+def test_agent_manager_keeps_idle_agent_with_active_pending_permission():
+    manager = AgentManager(max_active=10, idle_timeout=1, mcp_manager=SimpleNamespace())
+    try:
+        agent = _AgentStub()
+        agent.active_pending_permission = True
+        manager._agents["session-1"] = agent
+        manager._last_access["session-1"] = time.time() - 3600
+
+        manager._cleanup_idle()
+
+        assert manager.get_agent("session-1") is agent
+    finally:
+        manager.close_all()

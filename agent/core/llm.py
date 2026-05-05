@@ -1,4 +1,6 @@
+import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 from openai import OpenAI
@@ -14,6 +16,17 @@ from agent.core.config import (
     infer_provider_from_base_url,
 )
 from agent.core.providers.registry import get_provider_adapter
+from agent.server.chat_debug import summarize_text, write_chat_debug_event
+
+
+def _safe_base_url(value: str) -> str:
+    try:
+        parsed = urlparse(value or "")
+        if parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        pass
+    return summarize_text(value, preview_chars=60)["preview"]
 
 
 class LLMClient:
@@ -81,15 +94,54 @@ class LLMClient:
 
     def generate(self, prompt: str, max_tokens: int = LLM_MAX_TOKENS) -> str:
         client, config = self._create_client()
-        completion = client.chat.completions.create(
-            model=config["model_name"],
-            messages=[{"role": "user", "content": prompt}],
+        start_time = time.monotonic()
+        write_chat_debug_event(
+            "llm_generate_start",
+            provider=config["provider"],
+            model_name=config["model_name"],
+            base_url=_safe_base_url(config["base_url"]),
             max_tokens=max_tokens,
-            timeout=self.request_timeout,
+            prompt=summarize_text(prompt),
         )
+        try:
+            completion = client.chat.completions.create(
+                model=config["model_name"],
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                timeout=self.request_timeout,
+            )
+        except Exception as exc:
+            write_chat_debug_event(
+                "llm_generate_error",
+                provider=config["provider"],
+                model_name=config["model_name"],
+                base_url=_safe_base_url(config["base_url"]),
+                duration_ms=int((time.monotonic() - start_time) * 1000),
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
+            raise
         if not completion.choices:
+            write_chat_debug_event(
+                "llm_generate_success",
+                provider=config["provider"],
+                model_name=config["model_name"],
+                base_url=_safe_base_url(config["base_url"]),
+                duration_ms=int((time.monotonic() - start_time) * 1000),
+                choices_count=0,
+                response=summarize_text(""),
+            )
             return ""
-        return completion.choices[0].message.content or ""
+        content = completion.choices[0].message.content or ""
+        write_chat_debug_event(
+            "llm_generate_success",
+            provider=config["provider"],
+            model_name=config["model_name"],
+            base_url=_safe_base_url(config["base_url"]),
+            duration_ms=int((time.monotonic() - start_time) * 1000),
+            choices_count=len(completion.choices),
+            response=summarize_text(content),
+        )
+        return content
 
     def generate_with_tools(
         self,
@@ -115,4 +167,35 @@ class LLMClient:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        return client.chat.completions.create(**kwargs)
+        start_time = time.monotonic()
+        write_chat_debug_event(
+            "llm_generate_with_tools_start",
+            provider=config["provider"],
+            model_name=config["model_name"],
+            base_url=_safe_base_url(config["base_url"]),
+            max_tokens=max_tokens,
+            messages_count=len(messages or []),
+            tools_count=len(tools or []),
+        )
+        try:
+            response = client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            write_chat_debug_event(
+                "llm_generate_with_tools_error",
+                provider=config["provider"],
+                model_name=config["model_name"],
+                base_url=_safe_base_url(config["base_url"]),
+                duration_ms=int((time.monotonic() - start_time) * 1000),
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
+            raise
+        choices_count = len(getattr(response, "choices", []) or [])
+        write_chat_debug_event(
+            "llm_generate_with_tools_success",
+            provider=config["provider"],
+            model_name=config["model_name"],
+            base_url=_safe_base_url(config["base_url"]),
+            duration_ms=int((time.monotonic() - start_time) * 1000),
+            choices_count=choices_count,
+        )
+        return response

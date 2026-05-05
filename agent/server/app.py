@@ -102,7 +102,7 @@ from agent.core.database import Database
 from agent.core.paths import get_asset_root, get_runtime_root
 from agent.server.agent_manager import AgentManager
 from agent.server.chat_tasks import ChatTaskManager
-from agent.server.routes import sessions, chat, settings, files, projects, permissions, meta
+from agent.server.routes import sessions, chat, settings, files, projects, permissions, meta, debug
 
 runtime_root = get_runtime_root()
 logs_dir = runtime_root / "workspace" / "logs"
@@ -218,6 +218,7 @@ app.include_router(settings.router)
 app.include_router(files.router)
 app.include_router(permissions.router)
 app.include_router(meta.router)
+app.include_router(debug.router)
 
 
 @app.get("/api/health")

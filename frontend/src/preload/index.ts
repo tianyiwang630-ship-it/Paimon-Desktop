@@ -3,6 +3,7 @@ import type { AppRuntimeStatus, OpenPathResult } from '../shared/appRuntime'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
+  chatDebugEnabled: process.env.PAIMON_DEBUG_CHAT || '',
   requestExit: () => ipcRenderer.invoke('app:request-exit'),
   getRuntimeStatus: () => ipcRenderer.invoke('app:get-runtime-status'),
   retryBackendStartup: () => ipcRenderer.invoke('app:retry-backend-start'),
@@ -14,6 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
 export interface ElectronAPI {
   platform: string
+  chatDebugEnabled?: string
   requestExit: () => Promise<boolean>
   getRuntimeStatus: () => Promise<AppRuntimeStatus>
   retryBackendStartup: () => Promise<AppRuntimeStatus>

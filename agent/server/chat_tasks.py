@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, Optional
 
+from agent.server.chat_debug import summarize_text, write_chat_debug_event
 from agent.server.chat_run_state import build_progress_update, is_active_status, normalize_final_status
 from agent.server.models import ChatRequest, ChatStatusResponse, PermissionRequiredPayload
 
@@ -150,9 +151,24 @@ def execute_chat_request(
     body: ChatRequest,
     progress_callback: Optional[Callable[[Any], None]] = None,
 ) -> ChatExecutionResult:
+    start_time = time.monotonic()
+    write_chat_debug_event(
+        "chat_execute_start",
+        session_id=body.session_id,
+        project_id=body.project_id,
+        resume=body.resume,
+        message=summarize_text(body.message),
+    )
     try:
         agent = agent_manager.get_or_create(body.session_id, project_id=body.project_id)
     except Exception as exc:
+        write_chat_debug_event(
+            "chat_execute_agent_creation_failed",
+            session_id=body.session_id,
+            project_id=body.project_id,
+            duration_ms=int((time.monotonic() - start_time) * 1000),
+            error={"type": type(exc).__name__, "message": str(exc)},
+        )
         return ChatExecutionResult(
             session_id=body.session_id,
             status="failed",
@@ -166,12 +182,23 @@ def execute_chat_request(
             resume=body.resume,
             user_persisted=False,
         )
-        return _consume_agent_events(
+        result = _consume_agent_events(
             body.session_id,
             event_iter,
             agent.history,
             progress_callback=progress_callback,
         )
+        write_chat_debug_event(
+            "chat_execute_finished",
+            session_id=body.session_id,
+            project_id=body.project_id,
+            status=result.status,
+            duration_ms=int((time.monotonic() - start_time) * 1000),
+            tool_calls_count=result.tool_calls_count,
+            response=summarize_text(result.response),
+            error=result.error,
+        )
+        return result
     finally:
         if event_iter is not None:
             try:
@@ -256,6 +283,14 @@ class ChatTaskManager:
             self._tasks[request_id] = record
             self._running_by_session[body.session_id] = request_id
 
+        write_chat_debug_event(
+            "chat_task_created",
+            request_id=request_id,
+            session_id=body.session_id,
+            project_id=body.project_id,
+            resume=body.resume,
+            message=summarize_text(body.message),
+        )
         worker = threading.Thread(target=self._run_task, args=(request_id, body), daemon=True)
         worker.start()
         return self.get_task_or_raise(request_id)
@@ -358,11 +393,33 @@ class ChatTaskManager:
         self._cleanup_thread.join(timeout=5)
 
     def _run_task(self, request_id: str, body: ChatRequest) -> None:
-        result = execute_chat_request(
-            self._agent_manager,
-            body,
-            progress_callback=lambda update: self._apply_progress_update(request_id, update),
+        start_time = time.monotonic()
+        write_chat_debug_event(
+            "chat_task_worker_started",
+            request_id=request_id,
+            session_id=body.session_id,
+            project_id=body.project_id,
         )
+        try:
+            result = execute_chat_request(
+                self._agent_manager,
+                body,
+                progress_callback=lambda update: self._apply_progress_update(request_id, update),
+            )
+        except Exception as exc:
+            write_chat_debug_event(
+                "chat_task_worker_crashed",
+                request_id=request_id,
+                session_id=body.session_id,
+                project_id=body.project_id,
+                duration_ms=int((time.monotonic() - start_time) * 1000),
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
+            result = ChatExecutionResult(
+                session_id=body.session_id,
+                status="failed",
+                error=str(exc),
+            )
         self._finalize_task_result(request_id, result)
 
     def _run_pending_permission_task(self, request_id: str, session_id: str, pending_request_id: str) -> None:
@@ -400,18 +457,42 @@ class ChatTaskManager:
             if active_request_id == request_id:
                 self._running_by_session.pop(record.session_id, None)
 
+        write_chat_debug_event(
+            "chat_task_finalized",
+            request_id=request_id,
+            session_id=result.session_id,
+            status=final_status,
+            tool_calls_count=result.tool_calls_count,
+            response=summarize_text(result.response),
+            error=result.error,
+        )
+
     def _apply_progress_update(self, request_id: str, update) -> None:
         now_iso = _utc_now_iso()
+        logged = False
+        session_id = None
         with self._lock:
             record = self._tasks.get(request_id)
             if record is None:
                 return
             if not is_active_status(record.status):
                 return
+            previous_status = record.status
             record.status = str(update.status or "recovering")
             record.response = update.response
             record.error = update.error
             record.updated_at = now_iso
+            session_id = record.session_id
+            logged = previous_status != record.status or bool(update.error)
+        if logged:
+            write_chat_debug_event(
+                "chat_task_progress",
+                request_id=request_id,
+                session_id=session_id,
+                status=str(update.status or "recovering"),
+                response=summarize_text(update.response),
+                error=update.error,
+            )
 
     def _cleanup_loop(self) -> None:
         while not self._stop_event.wait(timeout=self._cleanup_interval_seconds):

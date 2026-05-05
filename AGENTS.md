@@ -12,3 +12,4 @@
 12 风险因素就两个：1 没有 Apple 开发者账号，2没有 macOS 11.7.10 测试资源，必须保证不能产生因为这两个以外的任何风险，比如检测脚本出问题。
 13 必须一次性把事情做好，为了实现这个目标，在实施前向我问尽可能详细的问题，直到你能确保实施不会有问题。
 14 第一性原理思考，而非关注形式，思考要实现什么，不能修改什么。
+15 python环境：本机代码测试/pytest/compileall 优先使用 Anaconda 的 ai12 环境，直接调用 `D:\Anaconda\envs\ai12\python.exe`，不要使用系统默认 `python`，也尽量不要用 `conda run -n ai12`，因为它可能受 PowerShell/GBK 编码影响报错。示例：`& 'D:\Anaconda\envs\ai12\python.exe' -m pytest tests/test_permission_flow.py`。

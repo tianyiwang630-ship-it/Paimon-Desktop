@@ -55,7 +55,10 @@ from agent.core.recovery import (
     decide_recovery,
 )
 from agent.core.config import (
-    MAX_CONTEXT_TOKENS, KEEP_RECENT_TURNS, MAX_TOOL_RESULT_CHARS
+    MAX_CONTEXT_TOKENS,
+    KEEP_RECENT_TURNS,
+    MAX_TOOL_RESULT_CHARS,
+    PERMISSION_REQUEST_TTL_SECONDS,
 )
 
 
@@ -513,6 +516,7 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
             self._execution_lock.release()
 
     def register_pending_tool_request(self, tool: str, args: Dict[str, Any], tool_call_id: Optional[str]) -> Dict[str, Any]:
+        now = time.time()
         request = {
             "request_id": uuid.uuid4().hex,
             "tool": tool,
@@ -522,14 +526,46 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
             "decision_extra_instruction": "",
             "chat_request_id": None,
             "status": "pending",
-            "created_at": time.time(),
+            "created_at": now,
+            "expires_at": now + PERMISSION_REQUEST_TTL_SECONDS,
         }
         self._pending_tool_request = request
         return dict(request)
 
+    def _is_pending_tool_request_expired(self, pending: Optional[Dict[str, Any]], now: Optional[float] = None) -> bool:
+        if not pending:
+            return True
+        try:
+            created_at = float(pending.get("created_at") or 0)
+        except (TypeError, ValueError):
+            return True
+        if created_at <= 0:
+            return True
+        current_time = time.time() if now is None else now
+        return current_time - created_at >= PERMISSION_REQUEST_TTL_SECONDS
+
+    def _clear_pending_tool_request_if_expired(self) -> bool:
+        pending = self._pending_tool_request
+        if not self._is_pending_tool_request_expired(pending):
+            return False
+        if pending is not None:
+            pending["status"] = "expired"
+        self._pending_tool_request = None
+        return True
+
+    def has_active_pending_permission(self) -> bool:
+        pending = self._pending_tool_request
+        if not pending:
+            return False
+        if self._clear_pending_tool_request_if_expired():
+            return False
+        return str(pending.get("status") or "") != "completed"
+
     def get_pending_tool_request(self, pending_request_id: str) -> Optional[Dict[str, Any]]:
         pending = self._pending_tool_request
         if not pending:
+            return None
+        if self._clear_pending_tool_request_if_expired():
             return None
         if pending.get("request_id") != pending_request_id:
             return None
@@ -542,6 +578,8 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
         extra_instruction: str = "",
     ) -> Dict[str, Any]:
         pending = self._pending_tool_request
+        if self._clear_pending_tool_request_if_expired():
+            raise KeyError(pending_request_id)
         if not pending or pending.get("request_id") != pending_request_id:
             raise KeyError(pending_request_id)
         pending["decision_action"] = action
@@ -551,6 +589,8 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
 
     def link_pending_tool_request_task(self, pending_request_id: str, chat_request_id: str) -> Dict[str, Any]:
         pending = self._pending_tool_request
+        if self._clear_pending_tool_request_if_expired():
+            raise KeyError(pending_request_id)
         if not pending or pending.get("request_id") != pending_request_id:
             raise KeyError(pending_request_id)
         pending["chat_request_id"] = chat_request_id
@@ -562,6 +602,8 @@ when user asks to gain any information from xiaohongshu/rednote/小红书，or f
         self._interrupted.clear()
 
         pending = self._pending_tool_request
+        if self._clear_pending_tool_request_if_expired():
+            raise ValueError("Pending tool request expired")
         if not pending or pending.get("request_id") != pending_request_id:
             raise ValueError("Pending tool request not found")
 

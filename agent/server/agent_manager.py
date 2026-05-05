@@ -128,6 +128,15 @@ class AgentManager:
                     # Keep active sessions warm and skip idle cleanup while running.
                     self._last_access[session_id] = now
                     continue
+                if agent is not None:
+                    has_active_pending = getattr(agent, "has_active_pending_permission", None)
+                    if callable(has_active_pending):
+                        try:
+                            if has_active_pending():
+                                self._last_access[session_id] = now
+                                continue
+                        except Exception:
+                            pass
                 if now - last_time > self.idle_timeout:
                     to_remove.append(session_id)
 

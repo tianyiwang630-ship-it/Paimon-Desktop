@@ -11,6 +11,7 @@ import {
 } from '../api/chat'
 import { getSettings, updateSettings } from '../api/settings'
 import { getApiErrorMessage } from '../api/client'
+import { logChatDebug, serializeChatDebugError } from '../api/chatDebug'
 import { getAppGuide, getSkillCatalog, type SkillCatalogItem } from '../api/meta'
 import { confirmPermission, executePendingPermission } from '../api/permissions'
 import type { Message, SettingsUpdate } from '../types'
@@ -93,6 +94,7 @@ const GLOBAL_DRAFT_KEY = '__global__'
 const REQUEST_RESULT_SKEW_MS = 1500
 const STATUS_RETRY_WEAK_NOTICE =
   'Network instability detected. Retrying (task will continue).'
+const PERMISSION_EXPIRED_NOTICE = '权限请求已超过 30 分钟，请重新发送指令。'
 
 function draftKeyForSession(sessionId: string | null): string {
   return sessionId ? `session:${sessionId}` : GLOBAL_DRAFT_KEY
@@ -144,6 +146,17 @@ function hasFinalAssistantSince(messages: Message[], sinceMs: number): boolean {
 function isRequestTimeoutError(error: any): boolean {
   const message = String(error?.message || '').toLowerCase()
   return error?.code === 'ECONNABORTED' || message.includes('timeout of ') || message.includes('timed out')
+}
+
+function isPermissionExpiredError(error: any): boolean {
+  const detail = error?.response?.data?.detail
+  if (detail && typeof detail === 'object' && detail.code === 'permission_expired') {
+    return true
+  }
+  const message = String(
+    detail?.message || detail || error?.response?.data?.message || error?.message || '',
+  ).toLowerCase()
+  return message.includes('permission request expired')
 }
 
 function truncatePreview(
@@ -401,6 +414,9 @@ export default function ChatPage() {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editingSessionTitle, setEditingSessionTitle] = useState('')
   const [openSessionMenuId, setOpenSessionMenuId] = useState<string | null>(null)
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
+  const [editingProjectName, setEditingProjectName] = useState('')
+  const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null)
   const [pendingSessions, setPendingSessions] = useState<Set<string>>(new Set())
   const [guideText, setGuideText] = useState('')
   const [guideLoading, setGuideLoading] = useState(false)
@@ -464,6 +480,7 @@ export default function ChatPage() {
     currentProjectId,
     setCurrentProject,
     createProject,
+    updateProject,
     deleteProject,
   } =
     useProjectStore()
@@ -668,6 +685,7 @@ export default function ChatPage() {
     if (pendingPermission) return
     if (pendingDeleteAction) return
     if (editingSessionId) return
+    if (editingProjectId) return
     if (showNewProject) return
     focusComposerSoon()
   }, [
@@ -677,6 +695,7 @@ export default function ChatPage() {
     pendingPermission,
     pendingDeleteAction,
     editingSessionId,
+    editingProjectId,
     showNewProject,
   ])
 
@@ -739,7 +758,9 @@ export default function ChatPage() {
     const onDocumentClick = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null
       if (target?.closest('[data-session-menu-root="true"]')) return
+      if (target?.closest('[data-project-menu-root="true"]')) return
       setOpenSessionMenuId(null)
+      setOpenProjectMenuId(null)
     }
     document.addEventListener('click', onDocumentClick)
     return () => document.removeEventListener('click', onDocumentClick)
@@ -942,13 +963,23 @@ export default function ChatPage() {
   }
 
   const buildStatusRetryHandlers = (sessionId: string, epoch: number): SendMessageOptions => ({
-    onStatusRetrying: (consecutiveFailures) => {
+    onStatusRetrying: (consecutiveFailures, error) => {
       if (!isRequestCurrent(sessionId, epoch)) return
+      logChatDebug('chat_ui_status_retrying', {
+        session_id: sessionId,
+        project_id: currentProjectId || undefined,
+        data: { consecutive_failures: consecutiveFailures },
+        error: serializeChatDebugError(error),
+      })
       if (consecutiveFailures < 2) return
       setStatusRetryNotice(sessionId, STATUS_RETRY_WEAK_NOTICE)
     },
     onStatusRecovered: () => {
       if (!isRequestCurrent(sessionId, epoch)) return
+      logChatDebug('chat_ui_status_recovered', {
+        session_id: sessionId,
+        project_id: currentProjectId || undefined,
+      })
       clearStatusRetryNotice(sessionId)
     },
     onRunStatusChange: (status, response) => {
@@ -1022,6 +1053,10 @@ export default function ChatPage() {
     } catch (error: any) {
       if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') {
         wasCanceled = true
+      } else if (isPermissionExpiredError(error)) {
+        setPendingPermission(null)
+        setPermissionNote('')
+        setPermissionMessage(PERMISSION_EXPIRED_NOTICE)
       } else if (!handlePermissionRequired(sessionId, error)) {
         console.error('Pending permission execution failed:', error)
         deferredError = error
@@ -1048,6 +1083,16 @@ export default function ChatPage() {
         if (timeoutError && finalArrived) {
           // Keep timeout as silent when final response already landed.
         } else if (!timeoutError) {
+          logChatDebug('chat_ui_error_rendered', {
+            session_id: sessionId,
+            project_id: currentProjectId || undefined,
+            data: {
+              flow: 'pending_permission',
+              timeout_error: timeoutError,
+              final_arrived: finalArrived,
+            },
+            error: serializeChatDebugError(deferredError),
+          })
           addOptimisticMessage({
             role: 'assistant',
             content: `[Error] ${deferredError?.message || 'Request failed'}`,
@@ -1142,6 +1187,16 @@ export default function ChatPage() {
         if (timeoutError && finalArrived) {
           // Keep timeout as silent when final response already landed.
         } else if (!timeoutError) {
+          logChatDebug('chat_ui_error_rendered', {
+            session_id: sessionId,
+            project_id: currentProjectId || undefined,
+            data: {
+              flow: 'send_message',
+              timeout_error: timeoutError,
+              final_arrived: finalArrived,
+            },
+            error: serializeChatDebugError(deferredError),
+          })
           addOptimisticMessage({
             role: 'assistant',
             content: `[Error] ${deferredError?.message || 'Request failed'}`,
@@ -1203,25 +1258,13 @@ export default function ChatPage() {
     }
   }
 
-  const handleNewProjectChat = async (e: React.MouseEvent, projectId: string) => {
-    e.stopPropagation()
-    try {
-      setCurrentProject(projectId)
-      const created = await createSession(projectId)
-      clearSessionDraft(created.id)
-      await setCurrentSession(created.id)
-      activeSessionIdRef.current = created.id
-      focusComposerSoon()
-    } catch (error) {
-      console.error('Failed to create project chat:', error)
-    }
-  }
-
   const handleSelectProject = (projectId: string | null) => {
     setCurrentProject(projectId)
     clearCurrentSession()
     activeSessionIdRef.current = null
     setShowProjects(false)
+    setEditingProjectId(null)
+    setOpenProjectMenuId(null)
   }
 
   const handleSelectSession = (sessionId: string) => {
@@ -1242,6 +1285,14 @@ export default function ChatPage() {
     setEditingSessionTitle('')
     if (!nextTitle || nextTitle === (originalTitle || '')) return
     await updateSessionTitle(sessionId, nextTitle)
+  }
+
+  const commitProjectRename = async (projectId: string, originalName: string) => {
+    const nextName = editingProjectName.trim()
+    setEditingProjectId(null)
+    setEditingProjectName('')
+    if (!nextName || nextName === (originalName || '')) return
+    await updateProject(projectId, { name: nextName })
   }
 
   const requestDeleteSession = (sessionId: string) => {
@@ -1266,8 +1317,8 @@ export default function ChatPage() {
     }
   }
 
-  const requestDeleteProject = (e: React.MouseEvent, projectId: string) => {
-    e.stopPropagation()
+  const requestDeleteProject = (projectId: string) => {
+    setOpenProjectMenuId(null)
     const project = projects.find((item) => item.id === projectId)
     setPendingDeleteAction({
       type: 'project',
@@ -1455,7 +1506,17 @@ export default function ChatPage() {
       await runPendingPermissionRequest(sessionId, pendingRequestId)
     } catch (error: any) {
       console.error('Permission confirmation failed:', error)
-      setPermissionMessage(error?.message || 'Failed to apply permission decision')
+      if (isPermissionExpiredError(error)) {
+        setPendingPermission(null)
+        setPermissionNote('')
+        markPending(pendingPermission.sessionId, false)
+        clearStatusRetryNotice(pendingPermission.sessionId)
+        setPermissionMessage(PERMISSION_EXPIRED_NOTICE)
+        await loadSessionMessages(pendingPermission.sessionId).catch(() => {})
+        await loadSessions().catch(() => {})
+      } else {
+        setPermissionMessage(getApiErrorMessage(error, 'Failed to apply permission decision'))
+      }
     } finally {
       setPermissionSubmitting(false)
     }
@@ -1502,22 +1563,68 @@ export default function ChatPage() {
                         currentProjectId === project.id ? 'bg-[var(--app-sidebar-active)]' : ''
                       }`}
                     >
-                      <span className="truncate">[P] {project.name}</span>
-                      <div className="ml-1 flex flex-shrink-0 items-center gap-2">
+                      <div className="flex min-w-0 items-center gap-1.5 truncate">
+                        {editingProjectId === project.id ? (
+                          <input
+                            value={editingProjectName}
+                            onChange={(e) => setEditingProjectName(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onBlur={() => void commitProjectRename(project.id, project.name || '')}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault()
+                                void commitProjectRename(project.id, project.name || '')
+                              }
+                              if (e.key === 'Escape') {
+                                e.preventDefault()
+                                setEditingProjectId(null)
+                                setEditingProjectName('')
+                              }
+                            }}
+                            className="min-w-0 flex-1 rounded bg-white/10 px-2 py-0.5 text-sm text-[var(--app-sidebar-text)] outline-none"
+                            autoFocus
+                          />
+                        ) : (
+                          <span className="truncate">[P] {project.name}</span>
+                        )}
+                      </div>
+                      <div data-project-menu-root="true" className="relative ml-1 flex-shrink-0">
                         <button
-                          onClick={(e) => void handleNewProjectChat(e, project.id)}
-                          className="text-[var(--app-sidebar-text-muted)] transition-colors hover:text-[var(--app-sidebar-text)]"
-                          title="New chat in this project"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setOpenProjectMenuId((prev) => (prev === project.id ? null : project.id))
+                          }}
+                          className={`rounded px-2 py-1 text-[var(--app-sidebar-text-muted)] transition-colors hover:bg-[var(--app-sidebar-active)] hover:text-[var(--app-sidebar-text)] ${
+                            openProjectMenuId === project.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                          }`}
+                          title="More"
                         >
-                          +
+                          ...
                         </button>
-                        <button
-                          onClick={(e) => requestDeleteProject(e, project.id)}
-                          className="text-[var(--app-sidebar-text-muted)] transition-colors hover:text-red-300"
-                          title="Delete project"
-                        >
-                          x
-                        </button>
+                        {openProjectMenuId === project.id && (
+                          <div className="absolute right-0 top-8 z-10 w-32 rounded-xl border border-white/10 bg-[var(--app-sidebar-hover)] py-1 shadow-lg">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setEditingProjectId(project.id)
+                                setEditingProjectName(project.name || '')
+                                setOpenProjectMenuId(null)
+                              }}
+                              className="block w-full px-3 py-1.5 text-left text-xs text-[var(--app-sidebar-text)] hover:bg-[var(--app-sidebar-active)]"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                requestDeleteProject(project.id)
+                              }}
+                              className="block w-full px-3 py-1.5 text-left text-xs text-red-300 hover:bg-[var(--app-sidebar-active)]"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>

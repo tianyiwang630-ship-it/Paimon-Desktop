@@ -10,6 +10,7 @@ $env:SKILLS_MCP_PYTHON = (python -c "import sys; print(sys.executable)")
 python -c "import fastapi,uvicorn,openai,yaml,fastmcp,tiktoken,send2trash; print('python deps ok')"
 
 # 再启动桌面端
+conda activate ai12
 cd frontend
 npm run electron:dev
 
